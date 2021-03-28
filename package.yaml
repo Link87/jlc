@@ -1,0 +1,51 @@
+name:                jlc
+version:             0.1.0.0
+github:              "Link87/jlc"
+license:             EUPL-1.2
+author:              "Marvin Gazibarić"
+maintainer:          "gusgazma@student.gu.se"
+copyright:           "2021 Marvin Gazibarić"
+
+extra-source-files:
+- README.md
+- ChangeLog.md
+
+# Metadata used when publishing your package
+# synopsis:            Short description of your package
+# category:            Web
+
+# To avoid duplicated efforts in documentation and dealing with the
+# complications of embedding Haddock markup inside cabal files, it is
+# common to point users to the README.md file.
+description:         Please see the README on GitHub at <https://github.com/Link87/jlc#readme>
+
+dependencies:
+- base >= 4.7 && < 5
+
+library:
+  source-dirs: src
+  dependencies:
+  - array
+  - containers
+
+executables:
+  jlc:
+    main:                Main.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - jlc
+
+tests:
+  jlc-test:
+    main:                TestJavalette.hs
+    source-dirs:         test
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - jlc
