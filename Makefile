@@ -4,8 +4,6 @@ HAPPY_OPTS = --array --info --ghc --coerce
 ALEX       = alex
 ALEX_OPTS  = --ghc
 
-ROOT_DIR:=$(dir $(realpath $(firstword $(MAKEFILE_LIST))))
-
 SRC_DIR := $(abspath src)
 LEXER_TEMPLATE := LexJavalette.x
 LEXER_HS := $(SRC_DIR)/$(patsubst %.x,%.hs, $(LEXER_TEMPLATE))
@@ -38,6 +36,6 @@ $(LEXER_HS):
 	${ALEX} ${ALEX_OPTS} -o $(LEXER_HS) $(LEXER_TEMPLATE)
 
 clean :
-	-rm -f *.hi *.o *.log *.aux *.dvi $(PARSER_HS) $(LEXER_HS) *.info *.exe
+	-rm -f *.hi *.o *.log *.aux *.dvi $(PARSER_HS) $(LEXER_HS) jlc.cabal *.info *.exe
 	stack purge
 	cabal clean
