@@ -2,13 +2,13 @@ name:                jlc
 version:             0.1.0.0
 github:              "Link87/jlc"
 license:             EUPL-1.2
+license-file:        LICENCE
 author:              "Marvin Gazibarić"
 maintainer:          "gusgazma@student.gu.se"
 copyright:           "2021 Marvin Gazibarić"
 
 extra-source-files:
 - README.md
-- ChangeLog.md
 
 # Metadata used when publishing your package
 # synopsis:            Short description of your package
@@ -27,6 +27,7 @@ library:
   dependencies:
   - array
   - containers
+  - mtl
 
 executables:
   jlc:

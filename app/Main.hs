@@ -1,7 +1,5 @@
 {-# LANGUAGE PatternSynonyms #-}
 
-import Control.Exception
-
 import System.Environment (getArgs)
 import System.Exit        (exitFailure)
 import System.IO.Error    (isUserError, ioeGetErrorString)
@@ -26,7 +24,7 @@ check s = do
       case typecheck tree of
         Left err -> do
           putStrLn "Type mismatch:"
-          putStrLn err
+          print err
           putStrLn "Compilation failed!"
           exitFailure
         Right annotated -> do

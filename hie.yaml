@@ -1,13 +1,13 @@
 cradle:
-  cabal:
-    - path: "src"
-      component: "lib:jlc"
+  stack:
+    - path: "./src"
+      component: "jlc:lib"
 
-    - path: "app/Main.hs"
-      component: "jlc:exe:jlc-exe"
+    - path: "./app/Main.hs"
+      component: "jlc:exe:jlc"
 
-    - path: "app/Paths_jlc.hs"
-      component: "jlc:exe:jlc-exe"
+    - path: "./app/Paths_jlc.hs"
+      component: "jlc:exe:jlc"
 
-    - path: "test"
+    - path: "./test"
       component: "jlc:test:jlc-test"

@@ -1,0 +1,10 @@
+{
+    "editor.fontFamily": "Hasklig, 'Cascadia Code', Consolas, 'Courier New', monospace",
+    "editor.rulers": [
+        80
+    ],
+    "terminal.integrated.fontFamily": "'Hasklig', 'Cascadia Code PL', Consolas, 'Courier New', monospace",
+    "files.associations": {
+        "*.jl": "cpp",
+    }
+}

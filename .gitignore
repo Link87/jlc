@@ -1,2 +1,8 @@
 .stack-work/
 *~
+
+jlc.cabal
+*.exe
+*.info
+**/LexJavalette.hs
+**/ParJavalette.hs
