@@ -1,8 +1,10 @@
 .stack-work/
 *~
 
+jlc
 jlc.cabal
 *.exe
 *.info
 **/LexJavalette.hs
 **/ParJavalette.hs
+*.tar.gz

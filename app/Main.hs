@@ -1,42 +1,58 @@
 {-# LANGUAGE PatternSynonyms #-}
 
+module Main where
+
+import Debug.Trace
+import ErrM (pattern Bad, pattern Ok)
+import ParJavalette (myLexer, pProg)
+import PrintJavalette (printTree)
 import System.Environment (getArgs)
-import System.Exit        (exitFailure)
-import System.IO.Error    (isUserError, ioeGetErrorString)
-
-import ParJavalette       (pProg, myLexer)
-import PrintJavalette       (printTree)
-import ErrM               (pattern Ok, pattern Bad)
-
-import TypeChecker        (typecheck)
+import System.Exit (exitFailure)
+import System.IO
+import TypeChecker (typecheck)
 
 -- | Parse, type check, and interpret a program given by the @String@.
-
 check :: String -> IO ()
 check s = do
   case pProg (myLexer s) of
-    Bad err  -> do
+    Bad err -> do
       putStrLn "Syntax error:"
       putStrLn err
       putStrLn "Compilation failed!"
+      hPutStrLn stderr "ERROR"
       exitFailure
     Ok tree -> do
-      putStrLn $ printTree tree
+      print tree
       case typecheck tree of
         Left err -> do
           putStrLn "Type mismatch:"
           print err
           putStrLn "Compilation failed!"
+          hPutStrLn stderr "ERROR"
           exitFailure
         Right annotated -> do
           putStrLn "Type check successful."
+          hPutStrLn stderr "OK"
 
 -- | Main: read file passed by only command line argument and call 'check'.
 main :: IO ()
 main = do
   args <- getArgs
   case args of
-    [file] -> readFile file >>= check
-    _      -> do
-      putStrLn "Usage: jlc <source_file>"
+    ["-f", file] -> readFile file >>= check
+    [] -> readFileStdin >>= check
+    _ -> do
+      putStrLn "Usage: 'jlc -f <source_file>' or suppy input with stdin"
+      -- hPutStrLn stderr $ "INPUT ERROR: " ++ show args
       exitFailure
+
+-- | Read a file from stdin
+readFileStdin :: IO String
+readFileStdin = do
+  done <- isEOF
+  if not done
+    then do
+      inp <- getLine
+      next <- readFileStdin
+      return $ inp ++ next
+    else return ""

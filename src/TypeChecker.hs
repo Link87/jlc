@@ -16,6 +16,8 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import PrintJavalette (printTree)
 
+import Debug.Trace
+
 pattern Ok a = Right a
 
 pattern Err msg = Left msg
@@ -183,6 +185,7 @@ checkFnBody def@(FnDef typ id args (Block stmts)) = do
       Argument typ id -> do
         extendContext (id, typ)
         saveArgs args
+    saveArgs [] = return ()
 
 lookupVar :: Ident -> Chk Type
 lookupVar id = do

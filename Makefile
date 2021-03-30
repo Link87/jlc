@@ -10,16 +10,28 @@ LEXER_HS := $(SRC_DIR)/$(patsubst %.x,%.hs, $(LEXER_TEMPLATE))
 PARSER_TEMPLATE := ParJavalette.y
 PARSER_HS := $(SRC_DIR)/$(patsubst %.y,%.hs, $(PARSER_TEMPLATE))
 
+ifeq ($(OS),Windows_NT)
+	DELETE := del /q
+	RENAME := ren
+else
+	DELETE := rm -f
+	RENAME := mv
+endif
+
 .PHONY : all build test doc parser lexer clean
 
 all : build
 
 build: parser lexer
 	stack install --local-bin-path ${CURDIR}
+	$(DELETE) /q jlc
+	$(RENAME) jlc.exe jlc
 
 test: parser lexer
-	stack test
-
+# stack test
+	tar -cvzf partA-1.tar.gz Makefile *.hs *.yaml* *.x *.y app src lib doc test/*.hs README.md LICENCE
+	cd test && python3 testing.py ../partA-1.tar.gz
+	
 doc:
 	stack build --haddock
 
@@ -35,7 +47,8 @@ lexer: $(LEXER_HS)
 $(LEXER_HS):
 	${ALEX} ${ALEX_OPTS} -o $(LEXER_HS) $(LEXER_TEMPLATE)
 
+# broken on windows
 clean :
-	-rm -f *.hi *.o *.log *.aux *.dvi $(PARSER_HS) $(LEXER_HS) jlc.cabal *.info *.exe
+	$(DELETE) *.hi *.o *.log *.aux *.dvi "$(PARSER_HS)" "$(LEXER_HS)" jlc jlc.cabal *.info *.exe *.tar.gz
 	stack purge
 	cabal clean
