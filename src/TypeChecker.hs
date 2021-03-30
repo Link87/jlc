@@ -27,6 +27,7 @@ data TypeError
   | TypeMismatchOverloaded Type [Type]
   | ExpectedFnType Type
   | ArgumentMismatch
+  | DuplicateVariable Ident
   | MainArguments
   | MainReturnType
   | MainNotFound
@@ -57,6 +58,8 @@ instance Show TypeError where
     showString "Type Mismatch: Expected a function but got " . shows got . showString "."
   showsPrec _ ArgumentMismatch =
     showString "Type Mismatch: Function arguments do not match function definition."
+  showsPrec _ (DuplicateVariable (Ident id)) =
+    showString "Variable declared multiple times: " . shows id . showString "."
   showsPrec _ MainArguments = showString "Function 'main' must not have arguments."
   showsPrec _ MainReturnType = showString "Function 'main' must return 'int'."
   showsPrec _ MainNotFound = showString "No function 'main' found."
@@ -99,8 +102,13 @@ preludeContext =
           Map.insert (Ident "readDouble") (Fun Doub []) emptyContext
 
 -- | Insert an element into the top of the stack
-extend :: ContextEntry -> ContextStack -> ContextStack
-extend (id, typ) (map : ctx) = Map.insert id typ map : ctx
+extendContext :: ContextEntry -> Chk ()
+extendContext (id, typ) = do
+  ctx <- get
+  case ctx of
+    map : ctx -> case Map.lookup id map of
+      Nothing -> put $ Map.insert id typ map : ctx
+      Just _ -> throwError $ DuplicateVariable id
 
 -- | Discard the top context of the context stack.
 discardTop :: Chk ()
@@ -163,7 +171,18 @@ checkTypes (Program (fn : rest)) = do
   return $ Program $ checked : other
 
 checkFnBody :: TopDef -> Chk TopDef
-checkFnBody = return
+checkFnBody def@(FnDef typ id args (Block stmts)) = do
+  newTop
+  saveArgs args
+  checkStmts stmts
+  discardTop
+  return def
+  where
+    saveArgs :: [Arg] -> Chk ()
+    saveArgs (arg:args) = case arg of
+      Argument typ id -> do
+        extendContext (id, typ)
+        saveArgs args
 
 lookupVar :: Ident -> Chk Type
 lookupVar id = do
@@ -180,17 +199,19 @@ lookupVar id = do
     Ident name = id
 
 checkStmts :: [Stmt] -> Chk Type
-checkStmts stms = undefined
-
--- case stms of
---   [] -> return env
---   x : rest -> do
---     env' <- checkStm env x
---     checkStms env' rest
+checkStmts stmts = case stmts of
+  [stmt] -> checkStmt stmt
+  stmt : rest -> do
+    checkStmt stmt
+    checkStmts rest
 
 checkStmt :: Stmt -> Chk Type
 checkStmt Empty = return Void
-checkStmt (BStmt blk) = checkBlk blk
+checkStmt (BStmt (Block stmts)) = do
+  newTop
+  typ <- checkStmts stmts
+  discardTop
+  return typ
 checkStmt (Decl typ items) = checkItems items typ
 checkStmt (Ass id expr) = do
   typ <- lookupVar id
@@ -228,26 +249,17 @@ checkVar id typ = do
 checkItems :: [Item] -> Type -> Chk Type
 checkItems (item : items) typ = case item of
   NoInit id -> do
-    ctx <- get
-    put $ extend (id, typ) ctx
+    extendContext (id, typ)
     checkItems items typ
     return typ
   Init id expr -> do
     inferred <- inferExpr expr
     if inferred == typ
       then do
-        ctx <- get
-        put $ extend (id, typ) ctx
+        extendContext (id, typ)
         checkItems items typ
         return typ
       else throwError $ TypeMismatch inferred typ
-
-checkBlk :: Blk -> Chk Type
-checkBlk (Block stmts) = do
-  newTop
-  typ <- checkStmts stmts
-  discardTop
-  return typ
 
 inferExpr :: Expr -> Chk Type
 inferExpr (EVar id) = lookupVar id
