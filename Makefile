@@ -13,9 +13,11 @@ PARSER_HS := $(SRC_DIR)/$(patsubst %.y,%.hs, $(PARSER_TEMPLATE))
 ifeq ($(OS),Windows_NT)
 	DELETE := del /q
 	RENAME := ren
+	COPY := copy /y /b
 else
 	DELETE := rm -f
 	RENAME := mv
+	COPY := cp
 endif
 
 .PHONY : all build test doc parser lexer bnfc clean
@@ -25,7 +27,7 @@ all : build
 build: parser lexer
 	stack install --local-bin-path ${CURDIR}
 	$(DELETE) /q jlc
-	$(RENAME) jlc.exe jlc
+	$(COPY) jlc.exe jlc
 
 test: parser lexer
 # stack test

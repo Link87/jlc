@@ -17,16 +17,19 @@ check s = do
   case pProg (myLexer s) of
     Bad err -> do
       putStrLn "Syntax error:"
-      putStrLn err
+      -- putStrLn err
+      hPutStrLn stderr err
+      hPutStrLn stderr s
       putStrLn "Compilation failed!"
-      hPutStrLn stderr "ERROR"
+      hPutStrLn stderr "ERROR1"
       exitFailure
     Ok tree -> do
       print tree
       case typecheck tree of
         Left err -> do
           putStrLn "Type mismatch:"
-          print err
+          -- print err
+          hPrint stderr err
           putStrLn "Compilation failed!"
           hPutStrLn stderr "ERROR"
           exitFailure
@@ -40,19 +43,8 @@ main = do
   args <- getArgs
   case args of
     ["-f", file] -> readFile file >>= check
-    [] -> readFileStdin >>= check
+    [] -> getContents >>= check
     _ -> do
       putStrLn "Usage: 'jlc -f <source_file>' or suppy input with stdin"
       -- hPutStrLn stderr $ "INPUT ERROR: " ++ show args
       exitFailure
-
--- | Read a file from stdin
-readFileStdin :: IO String
-readFileStdin = do
-  done <- isEOF
-  if not done
-    then do
-      inp <- getLine
-      next <- readFileStdin
-      return $ inp ++ next
-    else return ""
