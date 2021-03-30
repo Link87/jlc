@@ -249,7 +249,7 @@ checkVar id typ = do
   saved <- lookupVar id
   if saved == typ
     then return typ
-    else throwError $ TypeMismatch typ saved
+    else throwError $ TypeMismatch saved typ
 
 checkItems :: [Item] -> Type -> Chk Type
 checkItems [] typ = return typ
@@ -298,20 +298,20 @@ inferExpr (EOr expr1 expr2) = inferBin expr1 expr2 [Bool]
 -- one of the given types. Otherwise, a 'TypeError' is emitted.
 inferUn :: Expr -> [Type] -> Chk Type
 inferUn expr types = do
-  typ <- inferExpr expr
-  if typ `elem` types
-    then return typ
-    else throwError $ TypeMismatchOverloaded typ types
+  inferred <- inferExpr expr
+  if inferred `elem` types
+    then return inferred
+    else throwError $ TypeMismatchOverloaded inferred types
 
 -- | Infer the type for a binary expression. Both subexpressions have to match
 -- in their types and the inferred type has to be one of the given types.
 -- Otherwise, a 'TypeError' is emitted.
 inferBin :: Expr -> Expr -> [Type] -> Chk Type
 inferBin expr1 expr2 types = do
-  typ <- inferExpr expr1
-  if typ `elem` types
-    then checkExpr expr2 typ
-    else throwError $ TypeMismatchOverloaded typ types
+  inferred <- inferExpr expr1
+  if inferred `elem` types
+    then checkExpr expr2 inferred
+    else throwError $ TypeMismatchOverloaded inferred types
 
 -- | Checks if the function argument expressions match the function type.
 checkFn :: [Expr] -> Type -> Chk Type
@@ -321,6 +321,6 @@ checkFn exprs fntype@(Fun ret types) = case (exprs, types) of
     inferred <- inferExpr expr
     if inferred == typ
       then checkFn exprs (Fun ret types) >> return fntype
-      else throwError $ TypeMismatch typ inferred
+      else throwError $ TypeMismatch inferred typ
   (_, _) -> throwError ArgumentMismatch
 checkFn _exprs typ = throwError $ ExpectedFnType typ
