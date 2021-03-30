@@ -29,6 +29,7 @@ data TypeError
   | ExpectedFnType Type
   | ArgumentMismatch
   | DuplicateVariable Ident
+  | NonReturningPath
   | MainArguments
   | MainReturnType
   | MainNotFound
@@ -61,6 +62,8 @@ instance Show TypeError where
     showString "Type Mismatch: Function arguments do not match function definition."
   showsPrec _ (DuplicateVariable (Ident id)) =
     showString "Variable declared multiple times: " . shows id . showString "."
+  showsPrec _ NonReturningPath =
+    showString "Missing return statement: execution path without return found."
   showsPrec _ MainArguments = showString "Function 'main' must not have arguments."
   showsPrec _ MainReturnType = showString "Function 'main' must return 'int'."
   showsPrec _ MainNotFound = showString "No function 'main' found."
@@ -69,10 +72,22 @@ instance Show TypeError where
   showsPrec _ (UndeclaredVar (Ident id)) =
     showString $ "Use of undeclared variable " ++ id ++ "."
 
+data ReturnState = NoReturn | Return
+  deriving Show
+
+instance Semigroup ReturnState where
+  Return <> _ = Return
+  _ <> Return = Return
+  _ <> _ = NoReturn
+
+both :: ReturnState -> ReturnState -> ReturnState
+both Return Return = Return
+both _ _ = NoReturn
+
 type TypeResult a = Either TypeError a
 
 -- | The local context.
-type Context = Map Ident Type
+type Context = (Map Ident Type, ReturnState)
 
 -- | The context stack.
 type ContextStack = [Context]
@@ -91,24 +106,54 @@ newtype Chk a = MkChk (StateT ContextStack (ExceptT TypeError Identity) a)
 
 -- | An empty context.
 emptyContext :: Context
-emptyContext = Map.empty
+emptyContext = (Map.empty, NoReturn)
+
+insertContextEntry :: ContextEntry -> Context -> Context
+insertContextEntry (id, typ) (map, ret) = (Map.insert id typ map, ret)
+
+lookupContextEntry :: Ident -> Context -> Maybe Type
+lookupContextEntry id (map, _) = Map.lookup id map
+
+memberContextEntry :: Ident -> Context -> Bool
+memberContextEntry id (map, _) = Map.member id map
+
+getReturnState :: Chk ReturnState
+getReturnState = do
+  stack <- get
+  case stack of
+    (_, ret) : _ -> return ret
+    [] -> error "Empty context stack!"
+
+setReturnState :: ReturnState -> Chk ()
+setReturnState state = do
+  stack <- get
+  case stack of
+    (map, ret) : rest -> put $ (map, ret <> state) : rest
+    [] -> error "Empty context stack!"
+
+overrideReturnState :: ReturnState -> Chk ()
+overrideReturnState state = do
+  stack <- get
+  case stack of
+    (map, _) : rest -> put $ (map, state) : rest
+    [] -> error "Empty context stack!"
 
 -- | Context that contains the prelude functions.
 preludeContext :: Context
 preludeContext =
-  Map.insert (Ident "printInt") (Fun Void [Int]) $
-    Map.insert (Ident "printDouble") (Fun Void [Doub]) $
-      Map.insert (Ident "printString") (Fun Void [String]) $
-        Map.insert (Ident "readInt") (Fun Int []) $
-          Map.insert (Ident "readDouble") (Fun Doub []) emptyContext
+  insertContextEntry (Ident "printInt", Fun Void [Int]) $
+    insertContextEntry (Ident "printDouble", Fun Void [Doub]) $
+      insertContextEntry (Ident "printString", Fun Void [String]) $
+        insertContextEntry (Ident "readInt", Fun Int []) $
+          insertContextEntry (Ident "readDouble", Fun Doub []) emptyContext
 
 -- | Insert an element into the top of the stack
 extendContext :: ContextEntry -> Chk ()
 extendContext (id, typ) = do
   ctx <- get
   case ctx of
-    map : ctx -> case Map.lookup id map of
-      Nothing -> put $ Map.insert id typ map : ctx
+    map : ctx -> case lookupContextEntry id map of
+      Nothing -> put $ insertContextEntry (id, typ) map : ctx
       Just _ -> throwError $ DuplicateVariable id
 
 -- | Discard the top context of the context stack.
@@ -130,7 +175,7 @@ typecheck :: Prog -> TypeResult AnnotatedProg
 typecheck prog = do
   -- First pass: save fns and check for main function
   ctx <- saveFns prog
-  case Map.lookup (Ident "main") ctx of
+  case lookupContextEntry (Ident "main") ctx of
     Just (Fun Int []) -> Ok ctx
     Just (Fun Int _) -> Err MainArguments
     Just (Fun _ _) -> Err MainReturnType
@@ -147,12 +192,12 @@ saveFns :: Prog -> TypeResult Context
 saveFns (Program []) = Err NoFunctionFound
 saveFns (Program [fn]) = do
   (id, typ) <- saveSignature fn
-  return $ Map.insert id typ preludeContext
+  return $ insertContextEntry (id, typ) preludeContext
 saveFns (Program (fn : fns)) = do
   (id, typ) <- saveSignature fn
   context <- saveFns $ Program fns
-  if Map.notMember id context
-    then Ok (Map.insert id typ context)
+  if not $ memberContextEntry id context
+    then Ok (insertContextEntry (id, typ) context)
     else Err DuplicateFunction
 
 -- | Get the 'ContextEntry' of the function.
@@ -176,7 +221,9 @@ checkFnBody def@(FnDef typ id args (Block stmts)) = do
   --traceM $ show def
   newTop
   saveArgs args
+  when (typ == Void) $ setReturnState Return
   checkStmts stmts typ
+  checkReturnState
   discardTop
   return def
   where
@@ -187,6 +234,14 @@ checkFnBody def@(FnDef typ id args (Block stmts)) = do
         saveArgs args
     saveArgs [] = return ()
 
+checkReturnState :: Chk ()
+checkReturnState = do
+  state <- getReturnState
+  -- traceM $ show state
+  case state of
+    Return -> return ()
+    NoReturn -> throwError NonReturningPath
+
 lookupVar :: Ident -> Chk Type
 lookupVar id = do
   stack <- get
@@ -195,7 +250,7 @@ lookupVar id = do
     Nothing -> throwError $ UndeclaredVar id
   where
     stackLookup :: Ident -> ContextStack -> Maybe Type
-    stackLookup id (ctx : stack) = case Map.lookup id ctx of
+    stackLookup id (ctx : stack) = case lookupContextEntry id ctx of
       Just typ -> Just typ
       Nothing -> stackLookup id stack
     stackLookup _id [] = Nothing
@@ -214,7 +269,9 @@ checkStmt Empty _ = return Void
 checkStmt (BStmt (Block stmts)) typ = do
   newTop
   typ <- checkStmts stmts typ
+  state <- getReturnState
   discardTop
+  setReturnState state
   return typ
 checkStmt (Decl typ items) _ = checkItems items typ
 checkStmt (Ass id expr) _ = do
@@ -222,19 +279,43 @@ checkStmt (Ass id expr) _ = do
   checkExpr expr typ
 checkStmt (Incr id) _ = checkVar id Int
 checkStmt (Decr id) _ = checkVar id Int
-checkStmt (Ret expr) typ = checkExpr expr typ
+checkStmt (Ret expr) typ = do
+  typ <- checkExpr expr typ
+  setReturnState Return
+  return typ
 checkStmt VRet typ =
-  if typ == Void then return Void else throwError $ TypeMismatch typ Void
+  if typ == Void
+    then setReturnState Return >> return Void
+    else throwError $ TypeMismatch typ Void
 checkStmt (Cond expr stmt) typ = do
   checkExpr expr Bool
+  state <- getReturnState
+  -- traceM $ show state
   checkStmt stmt typ
+  -- state2 <- getReturnState
+  -- traceM $ show state2
+  case expr of
+    ELitTrue -> return typ
+    _ -> overrideReturnState state >> return typ
 checkStmt (CondElse expr stmt1 stmt2) typ = do
   checkExpr expr Bool
+  state <- getReturnState
   checkStmt stmt1 typ
+  branch1 <- getReturnState
+  overrideReturnState state
   checkStmt stmt2 typ
+  branch2 <- getReturnState
+  case expr of
+    ELitTrue -> overrideReturnState (state <> branch1) >> return typ 
+    ELitFalse -> overrideReturnState (state <> branch2) >> return typ 
+    _ -> overrideReturnState (state <> both branch1 branch2) >> return typ
 checkStmt (While expr stmt) typ = do
   checkExpr expr Bool
+  state <- getReturnState
   checkStmt stmt typ
+  case expr of
+    ELitTrue -> return typ
+    _ -> overrideReturnState state >> return typ
 checkStmt (SExp expr) _ = checkExpr expr Void
 
 checkExpr :: Expr -> Type -> Chk Type
