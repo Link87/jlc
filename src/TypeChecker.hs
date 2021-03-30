@@ -7,16 +7,15 @@ module TypeChecker
   )
 where
 
-import Javalette.Abs
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Identity
 import Control.Monad.State
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Javalette.Print (printTree)
-
 import Debug.Trace
+import Javalette.Abs
+import Javalette.Print (printTree)
 
 pattern Ok a = Right a
 
@@ -98,8 +97,8 @@ emptyContext = Map.empty
 preludeContext :: Context
 preludeContext =
   Map.insert (Ident "printInt") (Fun Void [Int]) $
-    Map.insert (Ident "printDouble ") (Fun Void [Doub]) $
-      Map.insert (Ident "printString") (Fun Void []) $ -- TODO
+    Map.insert (Ident "printDouble") (Fun Void [Doub]) $
+      Map.insert (Ident "printString") (Fun Void [String]) $
         Map.insert (Ident "readInt") (Fun Int []) $
           Map.insert (Ident "readDouble") (Fun Doub []) emptyContext
 
@@ -174,14 +173,15 @@ checkTypes (Program (fn : rest)) = do
 
 checkFnBody :: TopDef -> Chk TopDef
 checkFnBody def@(FnDef typ id args (Block stmts)) = do
+  --traceM $ show def
   newTop
   saveArgs args
-  checkStmts stmts
+  checkStmts stmts typ
   discardTop
   return def
   where
     saveArgs :: [Arg] -> Chk ()
-    saveArgs (arg:args) = case arg of
+    saveArgs (arg : args) = case arg of
       Argument typ id -> do
         extendContext (id, typ)
         saveArgs args
@@ -201,39 +201,41 @@ lookupVar id = do
     stackLookup _id [] = Nothing
     Ident name = id
 
-checkStmts :: [Stmt] -> Chk Type
-checkStmts stmts = case stmts of
-  [stmt] -> checkStmt stmt
+checkStmts :: [Stmt] -> Type -> Chk Type
+checkStmts stmts typ = case stmts of
+  [] -> return typ
   stmt : rest -> do
-    checkStmt stmt
-    checkStmts rest
+    -- traceM $ show stmt
+    checkStmt stmt typ
+    checkStmts rest typ
 
-checkStmt :: Stmt -> Chk Type
-checkStmt Empty = return Void
-checkStmt (BStmt (Block stmts)) = do
+checkStmt :: Stmt -> Type -> Chk Type
+checkStmt Empty _ = return Void
+checkStmt (BStmt (Block stmts)) typ = do
   newTop
-  typ <- checkStmts stmts
+  typ <- checkStmts stmts typ
   discardTop
   return typ
-checkStmt (Decl typ items) = checkItems items typ
-checkStmt (Ass id expr) = do
+checkStmt (Decl typ items) _ = checkItems items typ
+checkStmt (Ass id expr) _ = do
   typ <- lookupVar id
   checkExpr expr typ
-checkStmt (Incr id) = checkVar id Int
-checkStmt (Decr id) = checkVar id Int
-checkStmt (Ret expr) = undefined -- TODO return??
-checkStmt VRet = return Void -- TODO is that valid?
-checkStmt (Cond expr stmt) = do
+checkStmt (Incr id) _ = checkVar id Int
+checkStmt (Decr id) _ = checkVar id Int
+checkStmt (Ret expr) typ = checkExpr expr typ
+checkStmt VRet typ =
+  if typ == Void then return Void else throwError $ TypeMismatch typ Void
+checkStmt (Cond expr stmt) typ = do
   checkExpr expr Bool
-  checkStmt stmt
-checkStmt (CondElse expr stmt1 stmt2) = do
+  checkStmt stmt typ
+checkStmt (CondElse expr stmt1 stmt2) typ = do
   checkExpr expr Bool
-  checkStmt stmt1
-  checkStmt stmt2
-checkStmt (While expr stmt) = do
+  checkStmt stmt1 typ
+  checkStmt stmt2 typ
+checkStmt (While expr stmt) typ = do
   checkExpr expr Bool
-  checkStmt stmt
-checkStmt (SExp expr) = checkExpr expr Void
+  checkStmt stmt typ
+checkStmt (SExp expr) _ = checkExpr expr Void
 
 checkExpr :: Expr -> Type -> Chk Type
 checkExpr expr typ = do
@@ -250,6 +252,7 @@ checkVar id typ = do
     else throwError $ TypeMismatch typ saved
 
 checkItems :: [Item] -> Type -> Chk Type
+checkItems [] typ = return typ
 checkItems (item : items) typ = case item of
   NoInit id -> do
     extendContext (id, typ)
@@ -276,13 +279,18 @@ inferExpr (EApp id exprs) = do
   case result of
     (Fun ret _) -> return ret
     _ -> error "Assertion failed: not a function."
-inferExpr (EString str) = undefined -- TODO what here? maybe string type?
+inferExpr (EString str) = return String
 inferExpr (Neg expr) = inferUn expr [Int, Doub]
 inferExpr (Not expr) = inferUn expr [Bool]
-inferExpr (EMul expr1 Mod expr2) = inferBin expr1 expr2 [Int]
-inferExpr (EMul expr1 _ expr2) = inferBin expr1 expr2 [Int, Doub]
+inferExpr (EMul expr1 op expr2) = inferBin expr1 expr2 exprType
+  where
+    exprType = if op == Mod then [Int] else [Int, Doub]
 inferExpr (EAdd expr1 _op expr2) = inferBin expr1 expr2 [Int, Doub]
-inferExpr (ERel expr1 op expr2) = inferBin expr1 expr2 [Int, Doub]
+inferExpr (ERel expr1 op expr2) = do
+  inferBin expr1 expr2 exprType
+  return Bool
+  where
+    exprType = if op == EQU || op == NE then [Int, Doub, Bool] else [Int, Doub]
 inferExpr (EAnd expr1 expr2) = inferBin expr1 expr2 [Bool]
 inferExpr (EOr expr1 expr2) = inferBin expr1 expr2 [Bool]
 
