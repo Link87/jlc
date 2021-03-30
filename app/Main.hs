@@ -5,6 +5,7 @@ import System.Exit        (exitFailure)
 import System.IO.Error    (isUserError, ioeGetErrorString)
 
 import ParJavalette       (pProg, myLexer)
+import PrintJavalette       (printTree)
 import ErrM               (pattern Ok, pattern Bad)
 
 import TypeChecker        (typecheck)
@@ -20,7 +21,7 @@ check s = do
       putStrLn "Compilation failed!"
       exitFailure
     Ok tree -> do
-      print tree
+      putStrLn $ printTree tree
       case typecheck tree of
         Left err -> do
           putStrLn "Type mismatch:"
