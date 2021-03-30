@@ -98,7 +98,7 @@ coercions  Expr 6 ;
 
 separator  Expr "," ;
 
-internal ETyped. Expr ::= "[" Expr ":" Typ "]" ; -- addition
+internal ETyped. Expr ::= "[" Expr ":" Type "]" ; -- addition
 
 -- operators -----------------------------------------------
 

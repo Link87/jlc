@@ -22,23 +22,18 @@ description:         Please see the README on GitHub at <https://github.com/Link
 dependencies:
 - base >= 4.7 && < 5
 
-library:
-  source-dirs: src
-  dependencies:
-  - array
-  - containers
-  - mtl
-
 executables:
   jlc:
     main:                Main.hs
-    source-dirs:         app
+    source-dirs:         src
     ghc-options:
     - -threaded
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - jlc
+    - array
+    - containers
+    - mtl
 
 tests:
   jlc-test:

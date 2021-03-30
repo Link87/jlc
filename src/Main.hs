@@ -3,9 +3,9 @@
 module Main where
 
 import Debug.Trace
-import ErrM (pattern Bad, pattern Ok)
-import ParJavalette (myLexer, pProg)
-import PrintJavalette (printTree)
+import Javalette.ErrM (pattern Bad, pattern Ok)
+import Javalette.Par (myLexer, pProg)
+import Javalette.Print (printTree)
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
 import System.IO

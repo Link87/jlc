@@ -7,14 +7,14 @@ module TypeChecker
   )
 where
 
-import AbsJavalette
+import Javalette.Abs
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Identity
 import Control.Monad.State
 import Data.Map (Map)
 import qualified Data.Map as Map
-import PrintJavalette (printTree)
+import Javalette.Print (printTree)
 
 import Debug.Trace
 

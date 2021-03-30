@@ -4,10 +4,10 @@ HAPPY_OPTS = --array --info --ghc --coerce
 ALEX       = alex
 ALEX_OPTS  = --ghc
 
-SRC_DIR := $(abspath src)
-LEXER_TEMPLATE := LexJavalette.x
+SRC_DIR := $(abspath src/Javalette)
+LEXER_TEMPLATE := Lex.x
 LEXER_HS := $(SRC_DIR)/$(patsubst %.x,%.hs, $(LEXER_TEMPLATE))
-PARSER_TEMPLATE := ParJavalette.y
+PARSER_TEMPLATE := Par.y
 PARSER_HS := $(SRC_DIR)/$(patsubst %.y,%.hs, $(PARSER_TEMPLATE))
 
 ifeq ($(OS),Windows_NT)
@@ -18,7 +18,7 @@ else
 	RENAME := mv
 endif
 
-.PHONY : all build test doc parser lexer clean
+.PHONY : all build test doc parser lexer bnfc clean
 
 all : build
 
@@ -29,7 +29,7 @@ build: parser lexer
 
 test: parser lexer
 # stack test
-	tar -cvzf partA-1.tar.gz Makefile *.hs *.yaml* *.x *.y app src lib doc test/*.hs README.md LICENCE
+	tar -cvzf partA-1.tar.gz Makefile *.hs *.yaml* *.x *.y src lib doc test/*.hs README.md LICENCE
 	cd test && python3 testing.py ../partA-1.tar.gz
 	
 doc:
@@ -46,6 +46,9 @@ lexer: $(LEXER_HS)
 
 $(LEXER_HS):
 	${ALEX} ${ALEX_OPTS} -o $(LEXER_HS) $(LEXER_TEMPLATE)
+
+bnfc:
+	bnfc --haskell -d Javalette.cf
 
 # broken on windows
 clean :
