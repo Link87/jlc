@@ -52,7 +52,7 @@ doc:
 tar: $(TAR_NAME)
 
 $(TAR_NAME): $(GENERATED)
-	tar -cvzf $(TAR_NAME) Makefile *.hs *.yaml* *.x *.y src/*.hs lib doc test/*.hs README.md LICENCE Javalette.cf
+	tar -cvzf $(TAR_NAME) Makefile *.hs package.yaml stack.yaml* src/*.hs lib doc test/*.hs README.md LICENCE Javalette.cf
 
 # Rules for building the parser.
 

@@ -1,11 +1,14 @@
 .stack-work/
 *~
 
-jlc
-jlc.cabal
-*.exe
-*.info
 src/Javalette
 test/Test.hs
-*.tar.gz
+test/testing_*
 
+jlc*
+*.exe
+Lex.x
+Par.y
+Par.info
+Doc.txt
+*.tar*
