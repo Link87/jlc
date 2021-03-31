@@ -5,6 +5,7 @@ jlc
 jlc.cabal
 *.exe
 *.info
-**/LexJavalette.hs
-**/ParJavalette.hs
+src/Javalette
+test/Test.hs
 *.tar.gz
+
