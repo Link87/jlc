@@ -7,8 +7,8 @@ test/testing_*
 
 jlc*
 *.exe
-Lex.x
-Par.y
+*.x
+*.y
 Par.info
 Doc.txt
 *.tar*

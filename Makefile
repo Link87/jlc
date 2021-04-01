@@ -13,7 +13,7 @@ endif
 LANG = Javalette
 
 BNFC_DEST := src
-BNFC_FILE := $(LANG).cf
+BNFC_FILE := src$(SEP)$(LANG).cf
 BNFC_DIR := $(BNFC_DEST)$(SEP)$(LANG)
 BNFC_GENS = $(addprefix $(BNFC_DIR)$(SEP), Abs.hs ErrM.hs Print.hs Skel.hs)
 GENERATED = $(addprefix $(BNFC_DIR)$(SEP), Abs.hs ErrM.hs Lex.hs Par.hs Print.hs Skel.hs)
@@ -52,7 +52,7 @@ doc:
 tar: $(TAR_NAME)
 
 $(TAR_NAME): $(GENERATED)
-	tar -cvzf $(TAR_NAME) Makefile *.hs package.yaml stack.yaml* src/*.hs lib doc test/*.hs README.md LICENCE Javalette.cf
+	tar -cvzf $(TAR_NAME) Makefile *.hs package.yaml stack.yaml* src/*.hs lib doc test/*.hs README.md LICENCE $(BNFC_FILE)
 
 # Rules for building the parser.
 
