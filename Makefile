@@ -4,7 +4,7 @@ ifeq ($(OS),Windows_NT)
 	COPY := copy /y /b
 	SEP :=\\
 else
-	DELETE := rm -f
+	DELETE := rm -rfv
 	MOVE := mv
 	COPY := cp
 	SEP :=/
@@ -37,10 +37,15 @@ TAR_NAME = part$(ASSIGNMENT)-$(TRY).tar.gz
 
 all : build
 
+ifeq ($(OS),Windows_NT)
 build: $(GENERATED)
 	stack install --local-bin-path ${CURDIR}
-	$(DELETE) /q jlc
+	$(DELETE) jlc
 	$(COPY) jlc.exe jlc
+else
+build: $(GENERATED)
+	stack install --local-bin-path ${CURDIR}
+endif
 
 test: $(GENERATED) $(TAR_NAME)
 # stack test
@@ -71,6 +76,6 @@ $(BNFC_GENS) $(PARSER_TEMPLATE) $(LEXER_TEMPLATE):
 
 # broken on windows
 clean :
-	$(DELETE) *.hi *.o *.log *.aux *.dvi $(BNFC_DIR) jlc jlc.cabal *.info *.exe *.tar.gz
+	$(DELETE) *.hi *.o *.log *.aux *.dvi $(BNFC_DIR) jlc jlc.cabal *.info *.exe *.tar.gz *.txt *.x *.y
 	stack purge
 	cabal clean
