@@ -21,7 +21,7 @@ cradle:
     - path: "./src/Javalette/Skel.hs"
       component: "jlc:exe:jlc"
 
-    - path: "./src/TypeChecker.hs"
+    - path: "./src/TypeCheck.hs"
       component: "jlc:exe:jlc"
 
     - path: "./src/Paths_jlc.hs"

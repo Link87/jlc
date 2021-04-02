@@ -15,7 +15,7 @@ import System.Console.GetOpt
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
 import System.IO
-import TypeChecker (typecheck)
+import TypeCheck (typecheck)
 
 newtype Output a = MkOutput (ReaderT [Flag] IO a)
   deriving (Functor, Applicative, Monad, MonadReader [Flag], MonadIO)
