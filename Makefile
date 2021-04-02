@@ -1,10 +1,12 @@
 ifeq ($(OS),Windows_NT)
-	DELETE := del /q
+	DELETE := del /q /s
+	DELETE_DIR := rmdir /q /s
 	MOVE := move /y
 	COPY := copy /y /b
 	SEP :=\\
 else
-	DELETE := rm -rfv
+	DELETE := rm -fv
+	DELETE_DIR := rm -rfv
 	MOVE := mv
 	COPY := cp
 	SEP :=/
@@ -16,11 +18,15 @@ BNFC_DEST := src
 BNFC_FILE := src$(SEP)$(LANG).cf
 BNFC_DIR := $(BNFC_DEST)$(SEP)$(LANG)
 BNFC_GENS = $(addprefix $(BNFC_DIR)$(SEP), Abs.hs ErrM.hs Print.hs Skel.hs)
-GENERATED = $(addprefix $(BNFC_DIR)$(SEP), Abs.hs ErrM.hs Lex.hs Par.hs Print.hs Skel.hs)
+GENERATED_MODS = Abs.hs ErrM.hs Lex.hs Par.hs Print.hs Skel.hs
+GENERATED = $(addprefix $(BNFC_DIR)$(SEP), $(GENERATED_MODS))
 LEXER_TEMPLATE := Lex.x
 LEXER_HS := $(BNFC_DIR)$(SEP)Lex.hs
 PARSER_TEMPLATE := Par.y
 PARSER_HS := $(BNFC_DIR)$(SEP)Par.hs
+
+SRC_FILES := $(subst /,$(SEP),$(wildcard src/*.hs))
+DOC_DEST := doc$(SEP)haddock
 
 HAPPY      = happy
 HAPPY_OPTS = --array --info --ghc --coerce
@@ -33,9 +39,10 @@ ASSIGNMENT := A
 TRY := 1
 TAR_NAME = part$(ASSIGNMENT)-$(TRY).tar.gz
 
+.DEFAULT_GOAL := build
 .PHONY : all build test doc tar clean
 
-all : build
+all : build doc tar
 
 ifeq ($(OS),Windows_NT)
 build: $(GENERATED)
@@ -48,11 +55,10 @@ build: $(GENERATED)
 endif
 
 test: $(GENERATED) $(TAR_NAME)
-# stack test
 	cd test && python3 testing.py ../partA-1.tar.gz
 
 doc:
-	stack build --haddock
+	stack exec -- haddock --html $(SRC_FILES) $(GENERATED) $(addprefix --hide=Javalette., $(basename $(GENERATED_MODS))) --package-name=jlc --hyperlinked-source --odir=$(DOC_DEST)
 
 tar: $(TAR_NAME)
 
@@ -74,8 +80,8 @@ $(BNFC_GENS) $(PARSER_TEMPLATE) $(LEXER_TEMPLATE):
 	$(MOVE) $(BNFC_DIR)$(SEP)Doc.txt .
 	$(MOVE) $(BNFC_DIR)$(SEP)Test.hs test
 
-# broken on windows
 clean :
-	$(DELETE) *.hi *.o *.log *.aux *.dvi $(BNFC_DIR) jlc jlc.cabal *.info *.exe *.tar.gz *.txt *.x *.y
+	$(DELETE_DIR) $(BNFC_DIR) $(DOC_DEST)
+	$(DELETE) *.hi *.o *.log *.aux *.dvi jlc jlc.cabal *.info *.exe *.tar.gz *.txt *.x *.y
 	stack purge
 	cabal clean

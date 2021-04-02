@@ -4,6 +4,7 @@
 src/Javalette
 test/Test.hs
 test/testing_*
+doc/haddock
 
 jlc*
 *.exe
