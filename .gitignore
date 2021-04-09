@@ -1,7 +1,8 @@
 .stack-work/
 *~
 
-src/Javalette
+src/Javalette/Lang
+src/Lang.cf
 test/Test.hs
 test/testing_*
 doc/haddock

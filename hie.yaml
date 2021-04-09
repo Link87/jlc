@@ -1,27 +1,33 @@
 cradle:
   stack:
-    - path: "./src/Main.hs"
+    - path: "./src/Javalette/Main.hs"
       component: "jlc:exe:jlc"
 
-    - path: "./src/Javalette/Abs.hs"
+    - path: "./src/Javalette/Check/TypeCheck.hs"
       component: "jlc:exe:jlc"
 
-    - path: "./src/Javalette/ErrM.hs"
+    - path: "./src/Javalette/CLI.hs"
       component: "jlc:exe:jlc"
 
-    - path: "./src/Javalette/Lex.hs"
+    - path: "./src/Javalette/Gen/LLVM.hs"
       component: "jlc:exe:jlc"
 
-    - path: "./src/Javalette/Par.hs"
+    - path: "./src/Javalette/Lang/Abs.hs"
       component: "jlc:exe:jlc"
 
-    - path: "./src/Javalette/Print.hs"
+    - path: "./src/Javalette/Lang/ErrM.hs"
       component: "jlc:exe:jlc"
 
-    - path: "./src/Javalette/Skel.hs"
+    - path: "./src/Javalette/Lang/Lex.hs"
       component: "jlc:exe:jlc"
 
-    - path: "./src/TypeCheck.hs"
+    - path: "./src/Javalette/Lang/Par.hs"
+      component: "jlc:exe:jlc"
+
+    - path: "./src/Javalette/Lang/Print.hs"
+      component: "jlc:exe:jlc"
+
+    - path: "./src/Javalette/Lang/Skel.hs"
       component: "jlc:exe:jlc"
 
     - path: "./src/Paths_jlc.hs"

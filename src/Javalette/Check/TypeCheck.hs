@@ -2,23 +2,36 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
-module TypeCheck
+module Javalette.Check.TypeCheck
   ( TypeError (..),
-    typecheck,
+    check,
   )
 where
 
-import Control.Monad
+import Control.Monad (when)
 import Control.Monad.Except
-import Control.Monad.Identity
+  ( ExceptT,
+    MonadError (throwError),
+    runExceptT,
+  )
+import Control.Monad.Identity (Identity (runIdentity))
 import Control.Monad.State
+  ( MonadState (get, put),
+    StateT (StateT),
+    evalStateT,
+  )
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Debug.Trace
-import Javalette.Abs
-import Javalette.Print (printTree)
+import Javalette.Lang.Abs
+import Javalette.Lang.Print (printTree)
 
--- * Type definitions
+-- * Type Check
+
+-- | An annotated program. Nothing special type-wise.
+type AnnotatedProg = Prog
+
+-- | A result of the type checker. Is either a computed value or a `TypeError`.
+type TypeResult a = Either TypeError a
 
 pattern Ok :: b -> Either a b
 pattern Ok a = Right a
@@ -26,99 +39,9 @@ pattern Ok a = Right a
 pattern Err :: a -> Either a b
 pattern Err msg = Left msg
 
--- | An annotated program. Nothing special type-wise.
-type AnnotatedProg = Prog
-
--- | Used to indicate whether a function returns after a certain statement.
--- Mimics a `Bool`.
-data ReturnState = NoReturn | Return
-  deriving (Show)
-
--- | A function returns, if just one statement is a return statement (Except
--- for control flow statements). Therefore, think of it as the `(||)` operation.
-instance Semigroup ReturnState where
-  Return <> _ = Return
-  _ <> Return = Return
-  _ <> _ = NoReturn
-
--- | A result of the type checker. Is either a computed value or a `TypeError`.
-type TypeResult a = Either TypeError a
-
--- | The local context.
-type Context = (Map Ident Type, ReturnState)
-
--- | The context stack. Consists of individual `Context`s.
-type ContextStack = [Context]
-
--- | A variable entry in the local context.
-type ContextEntry = (Ident, Type)
-
--- | The monad used by the type checker. Keeps track of the context using the
--- @State@ monad and any errors using the @Except@ monad.
-newtype Chk a = MkChk (StateT ContextStack (ExceptT TypeError Identity) a)
-  deriving
-    ( Functor,
-      Applicative,
-      Monad,
-      MonadState ContextStack,
-      MonadError TypeError
-    )
-
--- | A kind of typing error that can occur in a program.
-data TypeError
-  = TypeMismatch Type Type
-  | TypeMismatchOverloaded Type [Type]
-  | ExpectedFnType Type
-  | ArgumentMismatch
-  | DuplicateVariable Ident
-  | NonReturningPath
-  | MainArguments
-  | MainReturnType
-  | MainNotFound
-  | NoFunctionFound
-  | DuplicateFunction
-  | UndeclaredVar Ident
-
-instance Show TypeError where
-  showsPrec _ (TypeMismatch got expected) =
-    showString "Type mismatch in program: Got "
-      . shows got
-      . showString " but expected "
-      . shows expected
-      . showString "."
-  showsPrec _ (TypeMismatchOverloaded got [expected]) =
-    showString "Type mismatch in program: Got "
-      . shows got
-      . showString " but expected "
-      . shows expected
-      . showString "."
-  showsPrec _ (TypeMismatchOverloaded got expected) =
-    showString "Type mismatch in program: Got "
-      . shows got
-      . showString " but expected one of "
-      . shows expected
-      . showString "."
-  showsPrec _ (ExpectedFnType got) =
-    showString "Type Mismatch: Expected a function but got " . shows got . showString "."
-  showsPrec _ ArgumentMismatch =
-    showString "Type Mismatch: Function arguments do not match function definition."
-  showsPrec _ (DuplicateVariable (Ident id)) =
-    showString "Variable declared multiple times: " . shows id . showString "."
-  showsPrec _ NonReturningPath =
-    showString "Missing return statement: execution path without return found."
-  showsPrec _ MainArguments = showString "Function 'main' must not have arguments."
-  showsPrec _ MainReturnType = showString "Function 'main' must return 'int'."
-  showsPrec _ MainNotFound = showString "No function 'main' found."
-  showsPrec _ NoFunctionFound = showString "No function definition found."
-  showsPrec _ DuplicateFunction = showString "Duplicate function identifier!"
-  showsPrec _ (UndeclaredVar (Ident id)) =
-    showString $ "Use of undeclared variable " ++ id ++ "."
-
--- * Main function
-
--- Run the type checker on a program.
-typecheck :: Prog -> TypeResult AnnotatedProg
-typecheck prog = do
+-- | Run the type checker on a program.
+check :: Prog -> TypeResult AnnotatedProg
+check prog = do
   -- First pass: save fns and check for main function
   ctx <- saveFns prog
   case lookupContextEntry (Ident "main") ctx of
@@ -128,10 +51,6 @@ typecheck prog = do
     Nothing -> Err MainNotFound
   -- Second pass: check types of fns
   runChk ctx $ checkProgram prog
-
--- | Run function of 'Chk' monad.
-runChk :: Context -> Chk AnnotatedProg -> TypeResult AnnotatedProg
-runChk ctx (MkChk rd) = runIdentity $ runExceptT $ evalStateT rd [ctx]
 
 -- * Type checking functions (first pass)
 
@@ -158,6 +77,21 @@ saveSignature (FnDef typ id args _blk) = Ok (id, Fun typ (argTypes args))
     argTypes (Argument typ _id : as) = typ : argTypes as
 
 -- * Type checking functions (second pass)
+
+-- | The monad used by the type checker. Keeps track of the context using the
+-- @State@ monad and any errors using the @Except@ monad.
+newtype Chk a = MkChk (StateT ContextStack (ExceptT TypeError Identity) a)
+  deriving
+    ( Functor,
+      Applicative,
+      Monad,
+      MonadState ContextStack,
+      MonadError TypeError
+    )
+
+-- | Run function of 'Chk' monad.
+runChk :: Context -> Chk AnnotatedProg -> TypeResult AnnotatedProg
+runChk ctx (MkChk rd) = runIdentity $ runExceptT $ evalStateT rd [ctx]
 
 -- | Typecheck the program. Main function for the second pass.
 -- Functions have to be present in context.
@@ -389,21 +323,48 @@ inferBin expr1 expr2 types = do
 
 -- * Type checking helper functions
 
--- | Search the context stack for a variable or function and return its type.
--- Takes the first element that is discovered.
-lookupVar :: Ident -> Chk Type
-lookupVar id = do
-  stack <- get
-  case stackLookup id stack of
-    Just typ -> return typ
-    Nothing -> throwError $ UndeclaredVar id
-  where
-    stackLookup :: Ident -> ContextStack -> Maybe Type
-    stackLookup id (ctx : stack) = case lookupContextEntry id ctx of
-      Just typ -> Just typ
-      Nothing -> stackLookup id stack
-    stackLookup _id [] = Nothing
-    Ident name = id
+-- | Get the type of a typed expression.
+getType :: Expr -> Type
+getType expr = case expr of
+  ETyped _ typ -> typ
+  _ -> error "Not a typed expression!"
+
+-- * Context
+
+-- | The local context.
+type Context = (Map Ident Type, ReturnState)
+
+-- | The context stack. Consists of individual `Context`s.
+type ContextStack = [Context]
+
+-- | A variable entry in the local context.
+type ContextEntry = (Ident, Type)
+
+-- | An empty context.
+emptyContext :: Context
+emptyContext = (Map.empty, NoReturn)
+
+-- | Context that contains the prelude functions of Javalette.
+preludeContext :: Context
+preludeContext =
+  insertContextEntry (Ident "printInt", Fun Void [Int]) $
+    insertContextEntry (Ident "printDouble", Fun Void [Doub]) $
+      insertContextEntry (Ident "printString", Fun Void [String]) $
+        insertContextEntry (Ident "readInt", Fun Int []) $
+          insertContextEntry (Ident "readDouble", Fun Doub []) emptyContext
+
+-- | Insert an entry into a `Context`.
+insertContextEntry :: ContextEntry -> Context -> Context
+insertContextEntry (id, typ) (map, ret) = (Map.insert id typ map, ret)
+
+-- | Look up whether an entry is present in a context. Returns `Just` if found,
+-- otherwise `Nothing`.
+lookupContextEntry :: Ident -> Context -> Maybe Type
+lookupContextEntry id (map, _) = Map.lookup id map
+
+-- | Look up whether an entry is present in a context.
+memberContextEntry :: Ident -> Context -> Bool
+memberContextEntry id (map, _) = Map.member id map
 
 -- | Insert an entry into the top of the context stack
 extendContext :: ContextEntry -> Chk ()
@@ -427,6 +388,42 @@ newTop :: Chk ()
 newTop = do
   ctx <- get
   put $ emptyContext : ctx
+
+-- | Search the context stack for a variable or function and return its type.
+-- Takes the first element that is discovered.
+lookupVar :: Ident -> Chk Type
+lookupVar id = do
+  stack <- get
+  case stackLookup id stack of
+    Just typ -> return typ
+    Nothing -> throwError $ UndeclaredVar id
+  where
+    stackLookup :: Ident -> ContextStack -> Maybe Type
+    stackLookup id (ctx : stack) = case lookupContextEntry id ctx of
+      Just typ -> Just typ
+      Nothing -> stackLookup id stack
+    stackLookup _id [] = Nothing
+    Ident name = id
+
+-- * Return State
+
+-- | Used to indicate whether a function returns after a certain statement.
+-- Mimics a `Bool`.
+data ReturnState = NoReturn | Return
+  deriving (Show)
+
+-- | A function returns, if just one statement is a return statement (Except
+-- for control flow statements). Therefore, think of it as the `(||)` operation.
+instance Semigroup ReturnState where
+  Return <> _ = Return
+  _ <> Return = Return
+  _ <> _ = NoReturn
+
+-- | Helper function. Return `Return` of both inputs are `Return`, else
+-- `NoReturn`.
+both :: ReturnState -> ReturnState -> ReturnState
+both Return Return = Return
+both _ _ = NoReturn
 
 -- | Examine the current return state. Throws an error if `NoReturn` is found.
 checkReturnState :: Chk ()
@@ -464,42 +461,54 @@ overrideReturnState state = do
     (map, _) : rest -> put $ (map, state) : rest
     [] -> error "Empty context stack!"
 
--- | Helper function. Return `Return` of both inputs are `Return`, else
--- `NoReturn`.
-both :: ReturnState -> ReturnState -> ReturnState
-both Return Return = Return
-both _ _ = NoReturn
+-- * Error handling
 
--- | Get the type of a typed expression.
-getType :: Expr -> Type
-getType expr = case expr of
-  ETyped _ typ -> typ
-  _ -> error "Not a typed expression!"
+-- | A kind of typing error that can occur in a program.
+data TypeError
+  = TypeMismatch Type Type
+  | TypeMismatchOverloaded Type [Type]
+  | ExpectedFnType Type
+  | ArgumentMismatch
+  | DuplicateVariable Ident
+  | NonReturningPath
+  | MainArguments
+  | MainReturnType
+  | MainNotFound
+  | NoFunctionFound
+  | DuplicateFunction
+  | UndeclaredVar Ident
 
--- * Context managing functions
-
--- | An empty context.
-emptyContext :: Context
-emptyContext = (Map.empty, NoReturn)
-
--- | Context that contains the prelude functions of Javalette.
-preludeContext :: Context
-preludeContext =
-  insertContextEntry (Ident "printInt", Fun Void [Int]) $
-    insertContextEntry (Ident "printDouble", Fun Void [Doub]) $
-      insertContextEntry (Ident "printString", Fun Void [String]) $
-        insertContextEntry (Ident "readInt", Fun Int []) $
-          insertContextEntry (Ident "readDouble", Fun Doub []) emptyContext
-
--- | Insert an entry into a `Context`.
-insertContextEntry :: ContextEntry -> Context -> Context
-insertContextEntry (id, typ) (map, ret) = (Map.insert id typ map, ret)
-
--- | Look up whether an entry is present in a context. Returns `Just` if found,
--- otherwise `Nothing`.
-lookupContextEntry :: Ident -> Context -> Maybe Type
-lookupContextEntry id (map, _) = Map.lookup id map
-
--- | Look up whether an entry is present in a context.
-memberContextEntry :: Ident -> Context -> Bool
-memberContextEntry id (map, _) = Map.member id map
+instance Show TypeError where
+  showsPrec _ (TypeMismatch got expected) =
+    showString "Type mismatch in program: Got "
+      . shows got
+      . showString " but expected "
+      . shows expected
+      . showString "."
+  showsPrec _ (TypeMismatchOverloaded got [expected]) =
+    showString "Type mismatch in program: Got "
+      . shows got
+      . showString " but expected "
+      . shows expected
+      . showString "."
+  showsPrec _ (TypeMismatchOverloaded got expected) =
+    showString "Type mismatch in program: Got "
+      . shows got
+      . showString " but expected one of "
+      . shows expected
+      . showString "."
+  showsPrec _ (ExpectedFnType got) =
+    showString "Type Mismatch: Expected a function but got " . shows got . showString "."
+  showsPrec _ ArgumentMismatch =
+    showString "Type Mismatch: Function arguments do not match function definition."
+  showsPrec _ (DuplicateVariable (Ident id)) =
+    showString "Variable declared multiple times: " . shows id . showString "."
+  showsPrec _ NonReturningPath =
+    showString "Missing return statement: execution path without return found."
+  showsPrec _ MainArguments = showString "Function 'main' must not have arguments."
+  showsPrec _ MainReturnType = showString "Function 'main' must return 'int'."
+  showsPrec _ MainNotFound = showString "No function 'main' found."
+  showsPrec _ NoFunctionFound = showString "No function definition found."
+  showsPrec _ DuplicateFunction = showString "Duplicate function identifier!"
+  showsPrec _ (UndeclaredVar (Ident id)) =
+    showString $ "Use of undeclared variable " ++ id ++ "."
