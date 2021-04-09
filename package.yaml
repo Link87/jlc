@@ -33,8 +33,10 @@ executables:
     - -with-rtsopts=-N
     dependencies:
     - array
+    - bytestring
     - containers
     - mtl
+    - text
 
 tests:
   jlc-test:

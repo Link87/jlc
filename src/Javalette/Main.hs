@@ -1,4 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 module Main where
@@ -7,6 +8,11 @@ import Control.Monad ( when, void )
 import Control.Monad.Reader
     ( when, void, MonadIO(..), ReaderT(..), asks, MonadReader(ask) )
 import Data.List ( find )
+import qualified Data.ByteString as S
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
+import qualified Data.Text.Encoding as TE
 import Javalette.CLI ( Flag(..), parseOpts )
 import Javalette.Check.TypeCheck (check)
 import Javalette.Lang.ErrM (pattern Bad, pattern Ok)
@@ -14,7 +20,7 @@ import Javalette.Lang.Par (myLexer, pProg)
 import Javalette.Lang.Print (printTree)
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
-import System.IO ( stderr, hPutStrLn )
+import System.IO ( Handle, stderr, stdout )
 
 -- | Main function. Read input and compile it.
 main :: IO ()
@@ -22,8 +28,8 @@ main = do
   args <- getArgs
   (flags, file) <- parseOpts args
   case file of
-    Just path -> readFile path >>= runOutput flags . compile
-    Nothing -> getContents >>= runOutput flags . compile
+    Just path -> S.readFile path >>= runOutput flags . compile . TE.decodeUtf8
+    Nothing -> TIO.getContents >>= runOutput flags . compile
 
 -- | Monad for handling compilation process. Flags are stored in 'ReaderT' and
 -- output is done via 'IO'.
@@ -35,7 +41,7 @@ runOutput :: [Flag] -> Output () -> IO ()
 runOutput flags (MkOutput out) = void $ runReaderT out flags
 
 -- | Parse, type check, and compile a program given by the @String@.
-compile :: String -> Output ()
+compile :: Text -> Output ()
 compile s = do
   standalone <- isStandalone
   intermediate <- intermediateFlagSet
@@ -44,11 +50,11 @@ compile s = do
       if standalone
         then do
           outputErr "Syntax error:"
-          outputErr $ show err
+          outputErr $ T.pack err
           outputErr "Compilation failed!"
         else do
           outputErr "ERROR"
-          outputErr $ show err
+          outputErr $ T.pack err
       liftIO exitFailure
     Ok tree -> do
       case check tree of
@@ -56,11 +62,11 @@ compile s = do
           if standalone
             then do
               outputErr "Type mismatch:"
-              outputErr $ show err
+              outputErr $ T.pack $ show err
               outputErr "Compilation failed!"
             else do
               outputErr "ERROR"
-              outputErr $ show err
+              outputErr $ T.pack $ show err
           liftIO exitFailure
         Right annotated -> do
           if standalone
@@ -68,16 +74,16 @@ compile s = do
               outputString "Type check successful."
               when intermediate $ outputResult annotated
             else do
-              outputString "OK"
+              outputErr "OK"
               when intermediate $ outputResult annotated
 
 -- | Print text to @stdout@.
-outputString :: String -> Output ()
-outputString = liftIO . hPutStrLn stderr
+outputString :: Text -> Output ()
+outputString = liftIO . TIO.hPutStrLn stdout
 
 -- | Print text to @stderr@.
-outputErr :: String -> Output ()
-outputErr = liftIO . hPutStrLn stderr
+outputErr :: Text -> Output ()
+outputErr = liftIO . TIO.hPutStrLn stderr
 
 -- | Write output to the output destination specified in the flags. Use this for
 -- compilation result.
@@ -87,7 +93,7 @@ outputResult out = do
   case find (== OutputFile "") flags of
     Nothing -> do
       outputString "Generated IR:"
-      outputString $ show out
+      outputString (T.pack $ show out)
     Just (OutputFile file) -> liftIO $ writeFile file (show out)
 
 -- | Read flags and return whether the standalone flag is set.

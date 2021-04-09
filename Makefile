@@ -33,7 +33,7 @@ HAPPY_OPTS := --array --info --ghc --coerce
 ALEX       := alex
 ALEX_OPTS  := --ghc
 BNFC       := bnfc
-BNFC_OPTS  := --haskell -d -p Javalette -o ${BNFC_DEST}
+BNFC_OPTS  := --haskell -d -p Javalette --text-token -o ${BNFC_DEST}
 BNFC_TEMP_FILE := src$(SEP)Lang.cf
 
 ASSIGNMENT := B

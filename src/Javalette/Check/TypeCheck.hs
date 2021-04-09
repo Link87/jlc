@@ -1,4 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
@@ -511,4 +512,4 @@ instance Show TypeError where
   showsPrec _ NoFunctionFound = showString "No function definition found."
   showsPrec _ DuplicateFunction = showString "Duplicate function identifier!"
   showsPrec _ (UndeclaredVar (Ident id)) =
-    showString $ "Use of undeclared variable " ++ id ++ "."
+    shows $ "Use of undeclared variable " <> id <> "."
