@@ -12,6 +12,12 @@ cradle:
     - path: "./src/Javalette/Gen/LLVM.hs"
       component: "jlc:exe:jlc"
 
+    - path: "./src/Javalette/Gen/LLVM/Instructions.hs"
+      component: "jlc:exe:jlc"
+
+    - path: "./src/Javalette/Gen/LLVM/Textual.hs"
+      component: "jlc:exe:jlc"
+
     - path: "./src/Javalette/Lang/Abs.hs"
       component: "jlc:exe:jlc"
 

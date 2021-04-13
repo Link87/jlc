@@ -1,47 +1,128 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Javalette.Gen.LLVM (
-  generateIR  
-) where
+module Javalette.Gen.LLVM
+  ( generateIR,
+  )
+where
 
-import Control.Monad.Identity
+import Control.Monad.Identity (Identity (runIdentity))
 import Control.Monad.State
+  ( MonadState (get, put),
+    StateT (StateT),
+    evalStateT,
+  )
+import Control.Monad.Writer
+  ( MonadWriter (tell),
+    WriterT (WriterT),
+    execWriterT,
+  )
+import Data.Map (Map)
+import qualified Data.Map as Map
+import Data.Monoid (Endo (..), appEndo)
 import Data.Text (Text)
-import Javalette.Check.TypeCheck ( AnnotatedProg )
+import qualified Data.Text as T
+import Javalette.Check.TypeCheck (AnnotatedProg)
+import Javalette.Gen.LLVM.Instructions (Instruction)
+import qualified Javalette.Gen.LLVM.Instructions as L
+import Javalette.Gen.LLVM.Textual (generateCode)
+import Javalette.Lang.Abs
+
+type Code = Endo [Instruction]
 
 generateIR :: AnnotatedProg -> Text
-generateIR _ = "\
-                \ declare void @printInt(i32 %n)\n\
-                \ define i32 @main() {\n\
-                \   entry:  %t1 = call i32 @sum(i32 100)\n\
-                \           call void @printInt(i32 %t1)\n\
-                \           ret i32 0\n\ 
-                \ }\n\
-                \ define i32 @sum (i32 %n) {\n\
-                \   entry:  %sum = alloca i32\n\
-                \           store i32 0, i32* %sum\n\
-                \           %i = alloca i32\n\
-                \           store i32 0, i32* %i\n\
-                \           br label %lab1\n\
-                \   lab1:   %t1 = load i32, i32* %i\n\
-                \           %t2 = add i32 %t1, 1\n\
-                \          %t3 = load i32, i32* %sum\n\
-                \           %t4 = add i32 %t2, %t3\n\
-                \          store i32 %t2, i32* %i\n\
-                \           store i32 %t4, i32* %sum\n\
-                \          %t5 = icmp eq i32 %t2, %n\n\
-                \           br i1 %t5, label %end,label %lab1\n\
-                \   end:    ret i32 %t4\n\
-                \ }\n"
+generateIR prog = generateCode $ appEndo (runGen $ compile prog) []
 
-type Env = ()
+newtype Gen a = MkGen (WriterT Code (StateT Env Identity) a)
+  deriving (Functor, Applicative, Monad, MonadState Env, MonadWriter Code)
 
--- data Env = Env {
--- vars :: [Map Ident Int],
--- maxvar :: Int,
--- code :: [Instruction]
--- }
+runGen :: Gen () -> Code
+runGen (MkGen gen) = runIdentity (evalStateT (execWriterT gen) emptyEnv)
 
-newtype Gen a = MkGen (StateT Env Identity a)
-    deriving (Functor, Applicative, Monad, MonadState Env)
+emit :: Instruction -> Gen ()
+emit instr = tell $ Endo ([instr] <>)
+
+compile :: AnnotatedProg -> Gen ()
+compile prog = do
+  emit $ L.FnDecl L.Void "printInt" [L.Int 32]
+  emit $ L.FnDecl L.Void "printDouble" [L.Doub]
+  emit $ L.FnDecl L.Void "printString" [L.Ptr $ L.Int 8]
+  emit $ L.FnDecl (L.Int 32) "readInt" []
+  emit $ L.FnDecl L.Doub "readInt" []
+  compileProg prog
+
+compileProg :: AnnotatedProg -> Gen ()
+compileProg (Program []) = return ()
+compileProg (Program (fn : rest)) = do
+  compileFn fn
+  compileProg $ Program rest
+
+compileFn :: TopDef -> Gen ()
+compileFn (FnDef typ id args (Block blk)) = do
+  llvmArgs <- compileFnArgs args
+  emit $ L.FnDef (toLLVMType typ) id llvmArgs
+  emit $ L.LabelDef $ Ident "entry"
+  compileStmts blk
+  emit L.EndFnDef
+  where
+    compileFnArgs :: [Arg] -> Gen [L.Arg]
+    compileFnArgs [] = return []
+    compileFnArgs (Argument typ jlId : rest) = do
+      llvmId <- newVarName
+      pushVar jlId llvmId
+      args <- compileFnArgs rest
+      return $ L.Argument (toLLVMType typ) llvmId : args
+
+compileStmts :: [Stmt] -> Gen ()
+compileStmts [] = return ()
+compileStmts (stmt : stmts) = do
+  compileStmt stmt
+  compileStmts stmts
+
+compileStmt :: Stmt -> Gen ()
+compileStmt Empty = return ()
+compileStmt (BStmt (Block _)) = undefined
+compileStmt (Decl typ items) = undefined
+compileStmt (Ass id expr) = undefined
+compileStmt (Incr id) = undefined
+compileStmt (Decr id) = undefined
+compileStmt (Ret (ETyped expr typ)) = do
+  id <- compileExpr expr
+  emit $ L.Return (toLLVMType typ) id
+compileStmt VRet = emit L.VReturn
+compileStmt (Cond expr stmt) = undefined
+compileStmt (CondElse expr stmt smt) = undefined
+compileStmt (While expr stmt) = undefined
+compileStmt (SExp expr) = undefined
+
+compileExpr :: Expr -> Gen Ident
+compileExpr = undefined
+
+toLLVMType :: Type -> L.Type
+toLLVMType Int = L.Int 32
+toLLVMType Doub = L.Doub
+toLLVMType Bool = L.Int 1
+toLLVMType Void = L.Void
+
+data Env = Env
+  { vars :: [Map Ident Ident],
+    nextVar :: Int,
+    nextLabel :: Int
+  }
+
+emptyEnv :: Env
+emptyEnv = Env [] 0 0
+
+newVarName :: Gen Ident
+newVarName = do
+  env <- get
+  let num = nextVar env
+  put env {nextVar = num + 1}
+  let id = Ident $ "t" <> T.pack (show num)
+  return id
+
+pushVar :: Ident -> Ident -> Gen ()
+pushVar jlId llvmId = do
+  env <- get
+  put env {vars = Map.insert jlId llvmId (head (vars env)) : tail (vars env)}
+  return ()
