@@ -43,7 +43,7 @@ options =
       ['i']
       ["intermediate"]
       (NoArg IntermediateRepr)
-      "Abort compilation after typechecking and output the IR. Not compatible with '-t', '-l' or '-x'. (default)",
+      "Abort compilation after typechecking and output the IR. Not compatible with '-t', '-l' or '-x'.",
     Option
       ['t']
       ["typecheck"]
@@ -53,7 +53,7 @@ options =
       ['l']
       ["llvm"]
       (NoArg LLVM)
-      "Compile to LLVM byte code. Not compatible with '-i', '-t' or '-x'. (unsupported atm)",
+      "Compile to LLVM byte code. Not compatible with '-i', '-t' or '-x'. (default)",
     Option
       ['x']
       ["x86"]
@@ -73,8 +73,8 @@ parseOpts args =
       if length (filter (\x -> x == IntermediateRepr || x == TypeCheck || x == LLVM || x == X86) flags) > 1
         then printErrors ["Conflicting arguments. Can only use one of '-i', '-t', '-l' or '-x'."]
         else
-          if elem LLVM flags || elem X86 flags
-            then printErrors ["LLVM and x86 are currently unsupported."]
+          if X86 `elem` flags
+            then printErrors ["x86 is currently unsupported."]
             else case files of
               [] -> return (flags, Nothing)
               [file] -> return (flags, Just file)

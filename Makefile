@@ -1,10 +1,12 @@
 ifeq ($(OS),Windows_NT)
+	MKDIR := mkdir
 	DELETE := del /q /s
 	DELETE_DIR := rmdir /q /s
 	MOVE := move /y
 	COPY := copy /y /b
 	SEP :=\\
 else
+	MKDIR := mkdir
 	DELETE := rm -fv
 	DELETE_DIR := rm -rfv
 	MOVE := mv
@@ -36,26 +38,41 @@ BNFC       := bnfc
 BNFC_OPTS  := --haskell -d -p Javalette --text-token -o ${BNFC_DEST}
 BNFC_TEMP_FILE := src$(SEP)Lang.cf
 
+# JL_FILE must be set via command line
+OUT_DIR := out
+LL_FILE := $(OUT_DIR)$(SEP)$(notdir $(addsuffix .ll,$(basename $(JL_FILE))))
+BC_FILE := $(LL_FILE:.ll=.bc)
+OPT_BC_FILE := $(LL_FILE:.ll=.opt.bc)
+LD_BC_FILE := $(LL_FILE:.ll=.ld.bc)
+O_FILE := $(LL_FILE:.ll=.o)
+ASM_FILE := $(LL_FILE:.ll=.s)
+ifeq ($(OS),Windows_NT)
+COMPILE_OUTPUT := $(LL_FILE:.ll=.exe)
+else
+COMPILE_OUTPUT := $(LL_FILE:.ll=)
+endif
+LLVM_RUNTIME := lib$(SEP)runtime.ll
+
 ASSIGNMENT := B
 TRY := 1
 TAR_NAME := part$(ASSIGNMENT)-$(TRY).tar.gz
 
 .DEFAULT_GOAL := build
-.PHONY : all build test doc tar clean
+.PHONY : all build test test-tc doc tar clean compile
 
 all : build doc tar
 
+build: $(GENERATED)
+	stack install --local-bin-path ${CURDIR}
 ifeq ($(OS),Windows_NT)
-build: $(GENERATED)
-	stack install --local-bin-path ${CURDIR}
-	$(DELETE) jlc
+	if exist jlc $(DELETE) jlc
 	$(COPY) jlc.exe jlc
-else
-build: $(GENERATED)
-	stack install --local-bin-path ${CURDIR}
 endif
 
 test: $(GENERATED) $(TAR_NAME)
+	cd test && python3 testing.py ../$(TAR_NAME) --llvm
+
+test-tc: $(GENERATED) $(TAR_NAME)
 	cd test && python3 testing.py ../$(TAR_NAME)
 
 doc: $(GENERATED)
@@ -84,7 +101,27 @@ $(BNFC_GENS) $(PARSER_TEMPLATE) $(LEXER_TEMPLATE):
 	$(MOVE) $(BNFC_DIR)$(SEP)Test.hs test
 
 clean :
-	$(DELETE) *.hi *.o *.log *.aux *.dvi jlc jlc.cabal *.info *.exe *.tar.gz *.txt *.x *.y $(BNFC_TEMP_FILE)
-	$(DELETE_DIR) $(BNFC_DIR) $(DOC_DEST)
+	$(DELETE) *.hi *.o *.log *.aux *.dvi jlc* jlc.cabal *.info test$(SEP)Test.hs *.tar.gz *.txt *.x *.y $(BNFC_TEMP_FILE)
+ifeq ($(OS),Windows_NT)
+	if exist $(BNFC_DIR) $(DELETE_DIR) $(BNFC_DIR)
+	if exist $(DOC_DEST) $(DELETE_DIR) $(DOC_DEST)
+	if exist $(OUT_DIR) $(DELETE_DIR) $(OUT_DIR)
+else
+	$(DELETE_DIR) $(BNFC_DIR) $(DOC_DEST) $(OUT_DIR)
+endif
 	stack purge
 	cabal clean
+
+# set JL_FILE via command line or environment variable
+compile: build
+ifeq ($(OS),Windows_NT)
+	if not exist $(OUT_DIR) $(MKDIR) $(OUT_DIR)
+else
+	$(MKDIR) $(OUT_DIR)
+endif
+	.$(SEP)jlc -s --llvm -o$(LL_FILE) $(JL_FILE)
+	llvm-as -o $(BC_FILE) $(LL_FILE)
+	opt -O3 $(BC_FILE) -o=$(OPT_BC_FILE)
+	llvm-link $(OPT_BC_FILE) $(LLVM_RUNTIME) -o $(LD_BC_FILE)
+	llc $(LD_BC_FILE) --filetype=obj -o=$(O_FILE)
+	gcc $(O_FILE) -o $(COMPILE_OUTPUT)

@@ -4,23 +4,30 @@
 
 module Main where
 
-import Control.Monad ( when, void )
+import Control.Monad (void, when)
 import Control.Monad.Reader
-    ( when, void, MonadIO(..), ReaderT(..), asks, MonadReader(ask) )
-import Data.List ( find )
+  ( MonadIO (..),
+    MonadReader (ask),
+    ReaderT (..),
+    asks,
+    void,
+    when,
+  )
 import qualified Data.ByteString as S
+import Data.List (find)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
 import qualified Data.Text.Encoding as TE
-import Javalette.CLI ( Flag(..), parseOpts )
+import qualified Data.Text.IO as TIO
+import Javalette.CLI (Flag (..), parseOpts)
 import Javalette.Check.TypeCheck (check)
+import Javalette.Gen.LLVM
 import Javalette.Lang.ErrM (pattern Bad, pattern Ok)
 import Javalette.Lang.Par (myLexer, pProg)
 import Javalette.Lang.Print (printTree)
 import System.Environment (getArgs)
-import System.Exit (exitFailure)
-import System.IO ( Handle, stderr, stdout )
+import System.Exit (exitFailure, exitSuccess)
+import System.IO (Handle, stderr, stdout)
 
 -- | Main function. Read input and compile it.
 main :: IO ()
@@ -43,8 +50,10 @@ runOutput flags (MkOutput out) = void $ runReaderT out flags
 -- | Parse, type check, and compile a program given by the @String@.
 compile :: Text -> Output ()
 compile s = do
-  standalone <- isStandalone
-  intermediate <- intermediateFlagSet
+  standalone <- asks $ elem Standalone
+  typecheck <- asks $ elem TypeCheck
+  intermediate <- asks $ elem IntermediateRepr
+  llvm <- llvmFlagSet
   case pProg (myLexer s) of
     Bad err -> do
       if standalone
@@ -72,10 +81,15 @@ compile s = do
           if standalone
             then do
               outputString "Type check successful."
-              when intermediate $ outputResult annotated
+              when intermediate $ outputResult annotated "Generated AST IR:" >> liftIO exitSuccess
             else do
               outputErr "OK"
-              when intermediate $ outputResult annotated
+              when intermediate $ outputResult annotated "Generated AST IR:" >> liftIO exitSuccess
+          when typecheck $ liftIO exitSuccess
+          let llvmIR = generateIR annotated
+          if standalone
+            then when llvm $ outputTextResult llvmIR "Generated LLVM IR:"
+            else when llvm $ outputTextResult llvmIR ""
 
 -- | Print text to @stdout@.
 outputString :: Text -> Output ()
@@ -86,25 +100,32 @@ outputErr :: Text -> Output ()
 outputErr = liftIO . TIO.hPutStrLn stderr
 
 -- | Write output to the output destination specified in the flags. Use this for
--- compilation result.
-outputResult :: Show a => a -> Output ()
-outputResult out = do
+-- a compilation result.
+outputResult :: Show a => a -> Text -> Output ()
+outputResult out msg = do
   flags <- ask
   case find (== OutputFile "") flags of
     Nothing -> do
-      outputString "Generated IR:"
+      outputString msg
       outputString (T.pack $ show out)
     Just (OutputFile file) -> liftIO $ writeFile file (show out)
 
--- | Read flags and return whether the standalone flag is set.
-isStandalone :: Output Bool
-isStandalone = asks $ elem Standalone
+-- | Write output to the output destination specified in the flags. Use this for
+-- an already 'Text'-based compilation result.
+outputTextResult :: Text -> Text -> Output ()
+outputTextResult out msg = do
+  flags <- ask
+  case find (== OutputFile "") flags of
+    Nothing -> do
+      outputString msg
+      outputString out
+    Just (OutputFile file) -> liftIO $ TIO.writeFile file out
 
--- | Read flags and return whether the intermediate flag is set. Currently,
--- this is the default value, i.e., also @True@ if no flag is set.
-intermediateFlagSet :: Output Bool
-intermediateFlagSet = do
+-- | Read flags and return whether the llvm flag is set. This is the
+-- default value, i.e., also @True@ if no flag is set.
+llvmFlagSet :: Output Bool
+llvmFlagSet = do
   flags <- ask
   return $
-    elem IntermediateRepr flags
+    elem LLVM flags
       || all (\x -> x /= IntermediateRepr && x /= TypeCheck && x /= LLVM && x /= X86) flags

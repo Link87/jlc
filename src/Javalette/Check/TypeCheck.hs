@@ -5,6 +5,7 @@
 
 module Javalette.Check.TypeCheck
   ( TypeError (..),
+    AnnotatedProg,
     check,
   )
 where

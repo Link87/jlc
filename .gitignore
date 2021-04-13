@@ -6,6 +6,7 @@ src/Lang.cf
 test/Test.hs
 test/testing_*
 doc/haddock
+out
 
 jlc*
 *.exe
