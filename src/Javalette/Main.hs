@@ -108,7 +108,9 @@ outputResult out msg = do
     Nothing -> do
       outputString msg
       outputString (T.pack $ show out)
-    Just (OutputFile file) -> liftIO $ writeFile file (show out)
+    Just (OutputFile file) -> do
+      liftIO $ writeFile file (show out)
+      outputString $ "Output successfully written to " <> T.pack file
 
 -- | Write output to the output destination specified in the flags. Use this for
 -- an already 'Text'-based compilation result.
@@ -119,7 +121,9 @@ outputTextResult out msg = do
     Nothing -> do
       outputString msg
       outputString out
-    Just (OutputFile file) -> liftIO $ TIO.writeFile file out
+    Just (OutputFile file) -> do
+      liftIO $ TIO.writeFile file out
+      outputString $ "Output successfully written to " <> T.pack file
 
 -- | Read flags and return whether the llvm flag is set. This is the
 -- default value, i.e., also @True@ if no flag is set.

@@ -6,17 +6,20 @@ module Javalette.Gen.LLVM
   )
 where
 
+import Control.Monad (void)
 import Control.Monad.Identity (Identity (runIdentity))
 import Control.Monad.State
   ( MonadState (get, put),
     StateT (StateT),
     evalStateT,
+    gets,
   )
 import Control.Monad.Writer
   ( MonadWriter (tell),
     WriterT (WriterT),
     execWriterT,
   )
+import Data.Either (fromRight)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Monoid (Endo (..), appEndo)
@@ -48,7 +51,7 @@ compile prog = do
   emit $ L.FnDecl L.Void "printDouble" [L.Doub]
   emit $ L.FnDecl L.Void "printString" [L.Ptr $ L.Int 8]
   emit $ L.FnDecl (L.Int 32) "readInt" []
-  emit $ L.FnDecl L.Doub "readInt" []
+  emit $ L.FnDecl L.Doub "readDouble" []
   compileProg prog
 
 compileProg :: AnnotatedProg -> Gen ()
@@ -58,11 +61,14 @@ compileProg (Program (fn : rest)) = do
   compileProg $ Program rest
 
 compileFn :: TopDef -> Gen ()
-compileFn (FnDef typ id args (Block blk)) = do
+compileFn (FnDef typ jlId args (Block blk)) = do
   llvmArgs <- compileFnArgs args
-  emit $ L.FnDef (toLLVMType typ) id llvmArgs
+  emit L.Blank
+  emit $ L.FnDef (toLLVMType typ) jlId llvmArgs
   emit $ L.LabelDef $ Ident "entry"
+  newTop
   compileStmts blk
+  discardTop
   emit L.EndFnDef
   where
     compileFnArgs :: [Arg] -> Gen [L.Arg]
@@ -71,7 +77,7 @@ compileFn (FnDef typ id args (Block blk)) = do
       llvmId <- newVarName
       pushVar jlId llvmId
       args <- compileFnArgs rest
-      return $ L.Argument (toLLVMType typ) llvmId : args
+      return $ L.Argument (toLLVMType typ) (L.RefVal llvmId) : args
 
 compileStmts :: [Stmt] -> Gen ()
 compileStmts [] = return ()
@@ -82,27 +88,102 @@ compileStmts (stmt : stmts) = do
 compileStmt :: Stmt -> Gen ()
 compileStmt Empty = return ()
 compileStmt (BStmt (Block _)) = undefined
-compileStmt (Decl typ items) = undefined
-compileStmt (Ass id expr) = undefined
-compileStmt (Incr id) = undefined
-compileStmt (Decr id) = undefined
-compileStmt (Ret (ETyped expr typ)) = do
-  id <- compileExpr expr
-  emit $ L.Return (toLLVMType typ) id
+compileStmt (Decl typ items) = do
+  compileItems items typ
+compileStmt (Ass jlId expr@(ETyped _ typ)) = do
+  val <- compileExpr expr
+  llvmId <- lookupVar jlId
+  emit $ L.Store (toLLVMType typ) val llvmId
+compileStmt (Incr jlId) = undefined
+compileStmt (Decr jlId) = undefined
+compileStmt (Ret expr@(ETyped _ typ)) = do
+  val <- compileExpr expr
+  emit $ L.Return (toLLVMType typ) val
 compileStmt VRet = emit L.VReturn
 compileStmt (Cond expr stmt) = undefined
 compileStmt (CondElse expr stmt smt) = undefined
 compileStmt (While expr stmt) = undefined
-compileStmt (SExp expr) = undefined
+compileStmt (SExp expr) = void $ compileExpr expr
 
-compileExpr :: Expr -> Gen Ident
-compileExpr = undefined
+compileItems :: [Item] -> Type -> Gen ()
+compileItems [] _ = return ()
+compileItems (item : items) typ =
+  case item of
+    NoInit jlId -> do
+      newVarInstr jlId typ
+      compileItems items typ
+    Init jlId expr -> do
+      llvmId <- newVarInstr jlId typ
+      val <- compileExpr expr
+      emit $ L.Store (toLLVMType typ) val llvmId
+      compileItems items typ
+
+newVarInstr :: Ident -> Type -> Gen Ident
+newVarInstr jlId typ = do
+  llvmId <- newVarName
+  pushVar jlId llvmId
+  emit $ L.Alloca llvmId (toLLVMType typ)
+  return llvmId
+
+compileExprs :: [Expr] -> Gen [L.Value]
+compileExprs [] = return []
+compileExprs (expr : exprs) = do
+  val <- compileExpr expr
+  vals <- compileExprs exprs
+  return $ val : vals
+
+compileExpr :: Expr -> Gen L.Value
+compileExpr (ETyped (EVar jlId) typ) = do
+  llvmId <- lookupVar jlId
+  tempId <- newVarName
+  emit $ L.Load tempId (toLLVMType typ) llvmId
+  return $ L.RefVal tempId
+compileExpr (ETyped (ELitInt ival) Int) = return $ L.LitVal $ L.IConst (fromInteger ival)
+compileExpr (ETyped (ELitDoub dval) Doub) = undefined
+compileExpr (ETyped ELitTrue Bool) = undefined
+compileExpr (ETyped ELitFalse Bool) = undefined
+compileExpr (ETyped (EApp jlId exprs) Void) = do
+  vals <- compileExprs exprs
+  emit $ L.VCall jlId (zipArgs vals (getTypes exprs))
+  return $ L.LitVal L.VConst
+  where
+    zipArgs :: [L.Value] -> [Type] -> [L.Arg]
+    zipArgs [] [] = []
+    zipArgs (val : vals) (typ : types) = L.Argument (toLLVMType typ) val : zipArgs vals types
+compileExpr (ETyped (EApp jlId exprs) typ) = undefined
+compileExpr (ETyped (EString sval) typ) = undefined
+compileExpr (ETyped (ENeg expr) Doub) = do
+  val <- compileExpr expr
+  tempId <- newVarName
+  emit $ L.FNeg tempId (toLLVMType Doub) val
+  return $ L.RefVal tempId
+compileExpr (ETyped (ENeg expr) Int) = do
+  val <- compileExpr expr
+  tempId <- newVarName
+  emit $ L.Mul tempId (toLLVMType Int) val (L.LitVal $ L.IConst (-1))
+  return $ L.RefVal tempId
+compileExpr (ETyped (ENot expr) Bool) = undefined
+compileExpr (ETyped (EMul expr1 op expr2) typ) = undefined
+compileExpr (ETyped (EAdd expr1 op expr2) typ) = undefined
+compileExpr (ETyped (ERel expr1 op expr2) Bool) = undefined
+compileExpr (ETyped (EAnd expr1 expr2) Bool) = undefined
+compileExpr (ETyped (EOr expr1 expr2) Bool) = undefined
+compileExpr _ = error "No (matching) type annotation found!"
 
 toLLVMType :: Type -> L.Type
 toLLVMType Int = L.Int 32
 toLLVMType Doub = L.Doub
 toLLVMType Bool = L.Int 1
 toLLVMType Void = L.Void
+
+getTypes :: [Expr] -> [Type]
+getTypes [] = []
+getTypes (expr : exprs) =
+  case expr of
+    ETyped _ typ -> typ : getTypes exprs
+    _ -> error "Not a typed expression!"
+
+-- * Environment
 
 data Env = Env
   { vars :: [Map Ident Ident],
@@ -111,18 +192,41 @@ data Env = Env
   }
 
 emptyEnv :: Env
-emptyEnv = Env [] 0 0
+emptyEnv = Env [Map.empty] 0 0
+
+-- | Discard the top context of the context stack.
+discardTop :: Gen ()
+discardTop = do
+  env <- get
+  case vars env of
+    top : rest -> put env {vars = rest}
+    _ -> error "Stack already empty!"
+
+-- | Add an empty context on top of the context stack.
+newTop :: Gen ()
+newTop = do
+  env <- get
+  put env {vars = Map.empty : vars env}
 
 newVarName :: Gen Ident
 newVarName = do
   env <- get
   let num = nextVar env
   put env {nextVar = num + 1}
-  let id = Ident $ "t" <> T.pack (show num)
-  return id
+  let llvmId = Ident $ "t" <> T.pack (show num)
+  return llvmId
 
 pushVar :: Ident -> Ident -> Gen ()
 pushVar jlId llvmId = do
   env <- get
   put env {vars = Map.insert jlId llvmId (head (vars env)) : tail (vars env)}
   return ()
+
+lookupVar :: Ident -> Gen Ident
+lookupVar jlId = gets (stackLookup jlId . vars)
+  where
+    stackLookup :: Ident -> [Map Ident Ident] -> Ident
+    stackLookup _ [] = error "Variable not found!"
+    stackLookup jlId (map : stack) = case Map.lookup jlId map of
+      Just llvmId -> llvmId
+      Nothing -> stackLookup jlId stack

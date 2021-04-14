@@ -272,12 +272,12 @@ inferExpr (EApp id exprs) = do
     (Fun ret _) -> return $ ETyped (EApp id annotated) ret
     _ -> error "Not a function but expected a function."
 inferExpr expr@(EString _) = return $ ETyped expr String
-inferExpr (Neg expr) = do
+inferExpr (ENeg expr) = do
   annotated <- inferUn expr [Int, Doub]
-  return $ ETyped (Neg annotated) (getType annotated)
-inferExpr (Not expr) = do
+  return $ ETyped (ENeg annotated) (getType annotated)
+inferExpr (ENot expr) = do
   annotated <- checkExpr expr Bool
-  return $ ETyped (Not annotated) Bool
+  return $ ETyped (ENot annotated) Bool
 inferExpr (EMul expr1 op expr2) = do
   (annotated1, annotated2) <- inferBin expr1 expr2 exprType
   return $ ETyped (EMul annotated1 op annotated2) (getType annotated1)
