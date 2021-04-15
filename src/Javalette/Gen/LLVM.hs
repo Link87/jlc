@@ -31,10 +31,12 @@ import qualified Javalette.Gen.LLVM.Instructions as L
 import Javalette.Gen.LLVM.Textual (generateCode)
 import Javalette.Lang.Abs
 
-type Code = Endo [Instruction]
+type Code = Endo ([Instruction], [Instruction])
 
 generateIR :: AnnotatedProg -> Text
-generateIR prog = generateCode $ appEndo (runGen $ compile prog) []
+generateIR prog = generateCode $ glob ++ code
+  where
+    (code, glob) = appEndo (runGen $ compile prog) ([], [])
 
 newtype Gen a = MkGen (WriterT Code (StateT Env Identity) a)
   deriving (Functor, Applicative, Monad, MonadState Env, MonadWriter Code)
@@ -43,15 +45,20 @@ runGen :: Gen () -> Code
 runGen (MkGen gen) = runIdentity (evalStateT (execWriterT gen) emptyEnv)
 
 emit :: Instruction -> Gen ()
-emit instr = tell $ Endo ([instr] <>)
+emit instr = tell $ Endo (([instr], mempty) <>)
+
+-- | Emit a global definition out-of-order
+emitGlob :: Instruction -> Gen ()
+emitGlob instr = tell $ Endo ((mempty, [instr]) <>)
 
 compile :: AnnotatedProg -> Gen ()
 compile prog = do
-  emit $ L.FnDecl L.Void "printInt" [L.Int 32]
-  emit $ L.FnDecl L.Void "printDouble" [L.Doub]
-  emit $ L.FnDecl L.Void "printString" [L.Ptr $ L.Int 8]
-  emit $ L.FnDecl (L.Int 32) "readInt" []
-  emit $ L.FnDecl L.Doub "readDouble" []
+  emitGlob $ L.FnDecl L.Void "printInt" [L.Int 32]
+  emitGlob $ L.FnDecl L.Void "printDouble" [L.Doub]
+  emitGlob $ L.FnDecl L.Void "printString" [L.Ptr $ L.Int 8]
+  emitGlob $ L.FnDecl (L.Int 32) "readInt" []
+  emitGlob $ L.FnDecl L.Doub "readDouble" []
+  emitGlob L.Blank
   compileProg prog
 
 compileProg :: AnnotatedProg -> Gen ()
@@ -77,7 +84,7 @@ compileFn (FnDef typ jlId args (Block blk)) = do
       llvmId <- newVarName
       pushVar jlId llvmId
       args <- compileFnArgs rest
-      return $ L.Argument (toLLVMType typ) (L.RefVal llvmId) : args
+      return $ L.Argument (toLLVMType typ) (L.Loc llvmId) : args
 
 compileStmts :: [Stmt] -> Gen ()
 compileStmts [] = return ()
@@ -137,31 +144,38 @@ compileExpr (ETyped (EVar jlId) typ) = do
   llvmId <- lookupVar jlId
   tempId <- newVarName
   emit $ L.Load tempId (toLLVMType typ) llvmId
-  return $ L.RefVal tempId
-compileExpr (ETyped (ELitInt ival) Int) = return $ L.LitVal $ L.IConst (fromInteger ival)
+  return $ L.Loc tempId
+compileExpr (ETyped (ELitInt ival) Int) = return $ L.IConst (fromInteger ival)
 compileExpr (ETyped (ELitDoub dval) Doub) = undefined
 compileExpr (ETyped ELitTrue Bool) = undefined
 compileExpr (ETyped ELitFalse Bool) = undefined
 compileExpr (ETyped (EApp jlId exprs) Void) = do
   vals <- compileExprs exprs
   emit $ L.VCall jlId (zipArgs vals (getTypes exprs))
-  return $ L.LitVal L.VConst
+  return L.VConst
   where
     zipArgs :: [L.Value] -> [Type] -> [L.Arg]
     zipArgs [] [] = []
     zipArgs (val : vals) (typ : types) = L.Argument (toLLVMType typ) val : zipArgs vals types
 compileExpr (ETyped (EApp jlId exprs) typ) = undefined
-compileExpr (ETyped (EString sval) typ) = undefined
+compileExpr (ETyped (EString sval) String) = do
+  let text = T.pack (sval ++ "\\00")
+  let typ = L.Arr (length sval + 1) (L.Int 8)
+  llvmGlobId <- newGlobVarName
+  emitGlob $ L.StringDef llvmGlobId typ (L.SConst text)
+  llvmLocId <- newVarName
+  emit $ L.GetElementPtr llvmLocId typ (L.Glob llvmGlobId) [L.Offset (L.Int 32) 0, L.Offset (L.Int 32) 0]
+  return $ L.Loc llvmLocId
 compileExpr (ETyped (ENeg expr) Doub) = do
   val <- compileExpr expr
   tempId <- newVarName
   emit $ L.FNeg tempId (toLLVMType Doub) val
-  return $ L.RefVal tempId
+  return $ L.Loc tempId
 compileExpr (ETyped (ENeg expr) Int) = do
   val <- compileExpr expr
   tempId <- newVarName
-  emit $ L.Mul tempId (toLLVMType Int) val (L.LitVal $ L.IConst (-1))
-  return $ L.RefVal tempId
+  emit $ L.Mul tempId (toLLVMType Int) val (L.IConst (-1))
+  return $ L.Loc tempId
 compileExpr (ETyped (ENot expr) Bool) = undefined
 compileExpr (ETyped (EMul expr1 op expr2) typ) = undefined
 compileExpr (ETyped (EAdd expr1 op expr2) typ) = undefined
@@ -175,6 +189,7 @@ toLLVMType Int = L.Int 32
 toLLVMType Doub = L.Doub
 toLLVMType Bool = L.Int 1
 toLLVMType Void = L.Void
+toLLVMType String = L.Ptr $ L.Int 8
 
 getTypes :: [Expr] -> [Type]
 getTypes [] = []
@@ -188,11 +203,18 @@ getTypes (expr : exprs) =
 data Env = Env
   { vars :: [Map Ident Ident],
     nextVar :: Int,
+    nextGlobVar :: Int,
     nextLabel :: Int
   }
 
 emptyEnv :: Env
-emptyEnv = Env [Map.empty] 0 0
+emptyEnv =
+  Env
+    { vars = [Map.empty],
+      nextVar = 0,
+      nextGlobVar = 0,
+      nextLabel = 0
+    }
 
 -- | Discard the top context of the context stack.
 discardTop :: Gen ()
@@ -215,6 +237,14 @@ newVarName = do
   put env {nextVar = num + 1}
   let llvmId = Ident $ "t" <> T.pack (show num)
   return llvmId
+
+newGlobVarName :: Gen Ident
+newGlobVarName = do
+  env <- get
+  let num = nextGlobVar env
+  put env {nextGlobVar = num + 1}
+  let llvmGlobId = Ident $ "g" <> T.pack (show num)
+  return llvmGlobId
 
 pushVar :: Ident -> Ident -> Gen ()
 pushVar jlId llvmId = do

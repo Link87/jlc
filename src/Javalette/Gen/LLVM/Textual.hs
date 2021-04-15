@@ -41,6 +41,13 @@ generateInstructionCode (L.FnDef typ id args) =
     <> ") {"
 generateInstructionCode L.EndFnDef = B.singleton '}'
 generateInstructionCode (L.LabelDef id) = ident id <> B.singleton ':'
+generateInstructionCode (L.StringDef id typ (L.SConst text)) =
+  llvmGlobIdent id
+    <> " = internal constant "
+    <> typeId typ
+    <> " c\""
+    <> B.fromText text
+    <> "\""
 generateInstructionCode (L.Alloca id typ) =
   indent
     <> llvmLocIdent id
@@ -65,6 +72,17 @@ generateInstructionCode (L.Load id1 typ id2) =
     <> typeId (L.Ptr typ)
     <> B.singleton ' '
     <> llvmLocIdent id2
+generateInstructionCode (L.GetElementPtr id1 typ id2 offsets) =
+  indent
+    <> llvmLocIdent id1
+    <> " = getelementptr "
+    <> typeId typ
+    <> ", "
+    <> typeId (L.Ptr typ)
+    <> B.singleton ' '
+    <> valueRepr id2
+    <> ", "
+    <> offsetList offsets
 generateInstructionCode (L.VCall id args) =
   indent
     <> "call "
@@ -74,7 +92,12 @@ generateInstructionCode (L.VCall id args) =
     <> B.singleton '('
     <> argList args
     <> B.singleton ')'
-generateInstructionCode (L.Return typ (L.LitVal val)) = indent <> "ret " <> typeId typ <> B.singleton ' ' <> constRepr val
+generateInstructionCode (L.Return typ val) =
+  indent
+    <> "ret "
+    <> typeId typ
+    <> B.singleton ' '
+    <> valueRepr val
 generateInstructionCode L.VReturn = indent <> "ret " <> typeId L.Void
 generateInstructionCode (L.Mul id typ val1 val2) =
   indent
@@ -96,11 +119,11 @@ generateInstructionCode L.Blank = ""
 
 typeId :: L.Type -> Builder
 typeId (L.Ptr typ) = typeId typ <> B.singleton '*'
-typeId (L.Int prec) = B.singleton 'i' <> (B.fromString . show) prec
+typeId (L.Int prec) = B.singleton 'i' <> showInt prec
 typeId L.Doub = "double"
 typeId (L.Arr size typ) =
   B.singleton '['
-    <> (B.fromString . show) size
+    <> showInt size
     <> " x "
     <> typeId typ
     <> B.singleton ']'
@@ -116,14 +139,25 @@ argList [] = ""
 argList [L.Argument typ val] = typeId typ <> B.singleton ' ' <> valueRepr val
 argList (L.Argument typ val : types) = typeId typ <> B.singleton ' ' <> valueRepr val <> ", " <> argList types
 
-valueRepr :: L.Value -> Builder
-valueRepr (L.LitVal val) = constRepr val
-valueRepr (L.RefVal id) = llvmLocIdent id
+offsetList :: [L.ElemOffset] -> Builder
+offsetList [] = ""
+offsetList [L.Offset typ off] = typeId typ <> B.singleton ' ' <> showInt off
+offsetList (L.Offset typ off : offsets) = typeId typ <> B.singleton ' ' <> showInt off <> ", " <> offsetList offsets
 
-constRepr :: L.Const -> Builder
-constRepr (L.IConst ival) = B.fromText $ T.pack $ show ival
-constRepr (L.DConst dval) = B.fromText $ T.pack $ show dval
-constRepr L.VConst = error "A void has no value representation!"
+valueRepr :: L.Value -> Builder
+valueRepr (L.Loc id) = llvmLocIdent id
+valueRepr (L.Glob id) = llvmGlobIdent id
+valueRepr (L.IConst ival) = showInt ival
+valueRepr (L.DConst dval) = showDouble dval
+valueRepr (L.BConst True) = "true"
+valueRepr (L.BConst False) = "false"
+valueRepr L.VConst = error "A void has no value representation!"
+
+showInt :: Int -> Builder
+showInt = B.fromString . show
+
+showDouble :: Double -> Builder
+showDouble = B.fromString . show
 
 ident :: Ident -> Builder
 ident (Ident name) = B.fromText name
