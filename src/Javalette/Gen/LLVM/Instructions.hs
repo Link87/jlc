@@ -4,7 +4,8 @@ module Javalette.Gen.LLVM.Instructions
     Type (..),
     Value (..),
     Arg (..),
-    CmpOp (..),
+    RelOp (..),
+    FRelOp (..),
     ElemOffset(..),
   )
 where
@@ -12,8 +13,6 @@ where
 import Data.Text (Text)
 import Javalette.Lang.Abs (Ident (Ident))
 import qualified Javalette.Lang.Abs as J
-
-newtype Label = Label Text
 
 data Type
   = Ptr Type
@@ -33,7 +32,9 @@ data Value
 
 data Arg = Argument Type Value
 
-data CmpOp = Eq | Ne | Sgt | Sge | Slt | Sle
+data RelOp = Eq | Ne | Sgt | Sge | Slt | Sle
+
+data FRelOp = Oeq | One | Ogt | Oge | Olt | Ole
 
 data ElemOffset = Offset Type Int
 
@@ -47,13 +48,14 @@ data Instruction
   | Store Type Value Ident
   | Load Ident Type Ident
   | GetElementPtr Ident Type Value [ElemOffset]
-  | Call Ident Ident [Arg]
+  | Call Ident Type Ident [Arg]
   | VCall Ident [Arg]
   | Return Type Value
   | VReturn
-  | ICompare CmpOp Value Value
-  | FCompare CmpOp Value Value
-  | Branch Ident Label Label
+  | ICompare Ident RelOp Type Value Value
+  | FCompare Ident FRelOp Type Value Value
+  | Branch Value Ident Ident
+  | UncondBranch Ident
   | Unreachable
   | Add Ident Type Value Value
   | Sub Ident Type Value Value
@@ -65,4 +67,7 @@ data Instruction
   | FMul Ident Type Value Value
   | FDiv Ident Type Value Value
   | FNeg Ident Type Value
+  | And Ident Type Value Value
+  | Or Ident Type Value Value
+  | XOr Ident Type Value Value
   | Blank

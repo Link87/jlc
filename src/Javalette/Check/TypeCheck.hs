@@ -24,6 +24,7 @@ import Control.Monad.State
   )
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Javalette.Check.Return (ReturnState(..), both)
 import Javalette.Lang.Abs
 import Javalette.Lang.Print (printTree)
 
@@ -408,24 +409,6 @@ lookupVar id = do
     Ident name = id
 
 -- * Return State
-
--- | Used to indicate whether a function returns after a certain statement.
--- Mimics a `Bool`.
-data ReturnState = NoReturn | Return
-  deriving (Show)
-
--- | A function returns, if just one statement is a return statement (Except
--- for control flow statements). Therefore, think of it as the `(||)` operation.
-instance Semigroup ReturnState where
-  Return <> _ = Return
-  _ <> Return = Return
-  _ <> _ = NoReturn
-
--- | Helper function. Return `Return` of both inputs are `Return`, else
--- `NoReturn`.
-both :: ReturnState -> ReturnState -> ReturnState
-both Return Return = Return
-both _ _ = NoReturn
 
 -- | Examine the current return state. Throws an error if `NoReturn` is found.
 checkReturnState :: Chk ()

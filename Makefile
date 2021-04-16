@@ -27,7 +27,7 @@ LEXER_HS := $(BNFC_DIR)$(SEP)Lex.hs
 PARSER_TEMPLATE := Par.y
 PARSER_HS := $(BNFC_DIR)$(SEP)Par.hs
 
-SRC_FILES := $(subst /,$(SEP),$(wildcard src/Javalette/*.hs) $(wildcard src/Javalette/Check/*.hs) $(wildcard src/Javalette/Gen/*.hs))
+SRC_FILES := $(subst /,$(SEP),$(wildcard src/Javalette/*.hs) $(wildcard src/Javalette/Check/*.hs) $(wildcard src/Javalette/Gen/*.hs) $(wildcard src/Javalette/Gen/LLVM/*.hs))
 DOC_DEST := doc$(SEP)haddock
 
 HAPPY      := happy
