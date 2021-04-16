@@ -6,7 +6,7 @@ ifeq ($(OS),Windows_NT)
 	COPY := copy /y /b
 	SEP :=\\
 else
-	MKDIR := mkdir
+	MKDIR := mkdir -p
 	DELETE := rm -fv
 	DELETE_DIR := rm -rfv
 	MOVE := mv
@@ -123,5 +123,7 @@ endif
 	llvm-as -o $(BC_FILE) $(LL_FILE)
 	opt -O3 $(BC_FILE) -o=$(OPT_BC_FILE)
 	llvm-link $(OPT_BC_FILE) $(LLVM_RUNTIME) -o $(LD_BC_FILE)
-	llc $(LD_BC_FILE) --filetype=obj -o=$(O_FILE)
-	gcc $(O_FILE) -o $(COMPILE_OUTPUT)
+	clang $(LD_BC_FILE) -o $(COMPILE_OUTPUT)
+#	llc $(LD_BC_FILE) --filetype=obj -o=$(O_FILE)
+
+#	gcc $(O_FILE) -o $(COMPILE_OUTPUT)

@@ -115,13 +115,19 @@ compileStmt (Ass jlId expr@(ETyped _ typ)) = do
   llvmId <- lookupVar jlId
   emit $ L.Store (toLLVMType typ) val llvmId
 compileStmt (Incr jlId) = do
-  val <- loadVarInstr jlId Int
-  llvmId <- newVarName
-  emit $ L.Add llvmId (toLLVMType Int) val (L.IConst 1)
+  llvmPtrId <- lookupVar jlId
+  llvmValId <- newVarName
+  emit $ L.Load llvmValId (toLLVMType Int) llvmPtrId
+  llvmResId <- newVarName
+  emit $ L.Add llvmResId (toLLVMType Int) (L.Loc llvmValId) (L.IConst 1)
+  emit $ L.Store (toLLVMType Int) (L.Loc llvmResId) llvmPtrId
 compileStmt (Decr jlId) = do
-  val <- loadVarInstr jlId Int
-  llvmId <- newVarName
-  emit $ L.Sub llvmId (toLLVMType Int) val (L.IConst 1)
+  llvmPtrId <- lookupVar jlId
+  llvmValId <- newVarName
+  emit $ L.Load llvmValId (toLLVMType Int) llvmPtrId
+  llvmResId <- newVarName
+  emit $ L.Sub llvmResId (toLLVMType Int) (L.Loc llvmValId) (L.IConst 1)
+  emit $ L.Store (toLLVMType Int) (L.Loc llvmResId) llvmPtrId
 compileStmt (Ret expr@(ETyped _ typ)) = do
   val <- compileExpr expr
   emit $ L.Return (toLLVMType typ) val
@@ -171,8 +177,8 @@ compileItems (item : items) typ =
       newVarInstr jlId typ
       compileItems items typ
     Init jlId expr -> do
-      llvmId <- newVarInstr jlId typ
       val <- compileExpr expr
+      llvmId <- newVarInstr jlId typ
       emit $ L.Store (toLLVMType typ) val llvmId
       compileItems items typ
   where
@@ -223,7 +229,8 @@ compileExpr (ETyped (EString sval) String) = do
 compileExpr (ETyped (ENeg expr) Doub) = do
   val <- compileExpr expr
   tempId <- newVarName
-  emit $ L.FNeg tempId (toLLVMType Doub) val
+  --emit $ L.FNeg tempId (toLLVMType Doub) val
+  emit $ L.FMul tempId (toLLVMType Doub) val (L.DConst (-1))
   return $ L.Loc tempId
 compileExpr (ETyped (ENeg expr) Int) = do
   val <- compileExpr expr

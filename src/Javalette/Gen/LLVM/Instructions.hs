@@ -66,7 +66,7 @@ data Instruction
   | FSub Ident Type Value Value
   | FMul Ident Type Value Value
   | FDiv Ident Type Value Value
-  | FNeg Ident Type Value
+  | FNeg Ident Type Value       -- Not supported on old LLVM versions
   | And Ident Type Value Value
   | Or Ident Type Value Value
   | XOr Ident Type Value Value
