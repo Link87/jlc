@@ -13,7 +13,6 @@ import Data.Text.Lazy.Builder (Builder)
 import qualified Data.Text.Lazy.Builder as B
 import Javalette.Gen.LLVM.Instructions (Instruction)
 import qualified Javalette.Gen.LLVM.Instructions as L
-import Javalette.Lang.Abs (Ident (Ident))
 import qualified Javalette.Lang.Abs as J
 
 -- | Generate textual LLVM code from a list of 'Instruction's.
@@ -354,19 +353,19 @@ showInt = B.fromString . show
 showDouble :: Double -> Builder
 showDouble = B.fromString . show
 
--- | Extract an identifier from an 'Ident' and convert it into a 'Builder'.
-ident :: Ident -> Builder
-ident (Ident name) = B.fromText name
+-- | Extract an identifier from an 'L.Ident' and convert it into a 'Builder'.
+ident :: L.Ident -> Builder
+ident (L.Ident name) = B.fromText name
 
--- | Precede an 'Ident' with a @\@@ to convert it into a global variable name
+-- | Precede an 'L.Ident' with a @\@@ to convert it into a global variable name
 -- representation for LLVM and convert it into a 'Builder'.
-llvmGlobIdent :: Ident -> Builder
-llvmGlobIdent (Ident name) = B.singleton '@' <> B.fromText name
+llvmGlobIdent :: L.Ident -> Builder
+llvmGlobIdent (L.Ident name) = B.singleton '@' <> B.fromText name
 
--- | Precede an 'Ident' with a @%@ to convert it into a local variable name
+-- | Precede an 'L.Ident' with a @%@ to convert it into a local variable name
 -- representation for LLVM and convert it into a 'Builder'.
-llvmLocIdent :: Ident -> Builder
-llvmLocIdent (Ident name) = B.singleton '%' <> B.fromText name
+llvmLocIdent :: L.Ident -> Builder
+llvmLocIdent (L.Ident name) = B.singleton '%' <> B.fromText name
 
 -- | Indentation for LLVM instructions. Improves readability.
 indent :: Builder

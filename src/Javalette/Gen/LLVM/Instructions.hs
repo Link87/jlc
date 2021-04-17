@@ -1,8 +1,10 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
 module Javalette.Gen.LLVM.Instructions
   ( Instruction (..),
     Type (..),
+    Ident (..),
     Value (..),
     Arg (..),
     RelOp (..),
@@ -12,8 +14,8 @@ module Javalette.Gen.LLVM.Instructions
   )
 where
 
+import Data.String (IsString)
 import Data.Text (Text)
-import Javalette.Lang.Abs (Ident (Ident))
 import qualified Javalette.Lang.Abs as J
 
 -- | Possible types for values in LLVM.
@@ -22,20 +24,24 @@ data Type
     Ptr Type
   | -- | An integer value with a certain number of bits.
     Int Int
-  | -- | A LLVM @double@ value.
+  | -- | An LLVM @double@ value.
     Doub
-  | -- | A LLVM array of a certain length and type.
+  | -- | An LLVM array of a certain length and type.
     Arr Int Type
   | -- | The LLVM @void@ type.
     Void
+
+-- | An LLVM identifier.
+newtype Ident = Ident Text
+  deriving IsString
 
 -- | Possible values that can be handed to LLVM instructions. Can either be
 -- constant values or local or global variables.
 data Value
   = -- | A local variable.
-    Loc J.Ident
+    Loc Ident
   | -- | A global variable.
-    Glob J.Ident
+    Glob Ident
   | -- | A constant integer value.
     IConst Int
   | -- | A constant double value.

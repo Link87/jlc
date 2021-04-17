@@ -1,5 +1,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
 module Javalette.Gen.LLVM
   ( generateIR,
@@ -13,6 +14,7 @@ import Control.Monad.State
     StateT (StateT),
     evalStateT,
     gets,
+    modify,
   )
 import Control.Monad.Writer
   ( MonadWriter (tell),
@@ -30,26 +32,51 @@ import qualified Javalette.Gen.LLVM.Instructions as L
 import Javalette.Gen.LLVM.Textual (generateCode)
 import Javalette.Lang.Abs
 
-type Code = Endo ([Instruction], [Instruction])
+-- * Main function
 
+-- | Generate an LLVM intermediate representation from a type-annotated AST.
+--
+-- This uses two passes: First, the AST is converted in a list of
+-- instuctions. Then, the list of instructions is converted into text from using
+-- 'generateCode'.
 generateIR :: AnnotatedProg -> Text
 generateIR prog = generateCode $ glob ++ code
   where
     (code, glob) = appEndo (runGen $ compile prog) ([], [])
 
+-- * Code compilation prerequisites
+
+-- | Code collected in the 'WriterT' monad.
+--
+-- Contains a list of 'Instruction's
+-- derived from the AST in-order as well as a list of instructions that are
+-- global statements and emitted separately and out-of-order. Since left-nested
+-- applications of @'(++)'@ are slow, we make use of 'Endo' to concatenate
+-- instructions right-nested at the end.
+type Code = Endo ([Instruction], [Instruction])
+
+-- | The monad used for generating code. Saves the current state in a 'StateT'
+-- monad and the emitted code in a 'WriterT' monad.
 newtype Gen a = MkGen (WriterT Code (StateT Env Identity) a)
   deriving (Functor, Applicative, Monad, MonadState Env, MonadWriter Code)
 
+-- | Extract emitted 'Code' from the 'Gen' monad.
 runGen :: Gen () -> Code
 runGen (MkGen gen) = runIdentity (evalStateT (execWriterT gen) emptyEnv)
 
+-- | Append an instruction to the end of the code.
 emit :: Instruction -> Gen ()
 emit instr = tell $ Endo (([instr], mempty) <>)
 
--- | Emit a global definition out-of-order
+-- | Emit an instruction as a global statement out-of-order. Global instructions
+-- are prepended to normally emitted code.
 emitGlob :: Instruction -> Gen ()
 emitGlob instr = tell $ Endo ((mempty, [instr]) <>)
 
+-- * Compilation functions
+
+-- | Compile an type-annotated AST into a list of instructions. Emits global
+-- statements for runtime function declarations.
 compile :: AnnotatedProg -> Gen ()
 compile prog = do
   emitGlob $ L.FnDecl L.Void "printInt" [L.Int 32]
@@ -60,54 +87,56 @@ compile prog = do
   emitGlob L.Blank
   compileProg prog
 
+-- | Compile an type-annotated AST into a list of instructions.
 compileProg :: AnnotatedProg -> Gen ()
 compileProg (Program []) = return ()
 compileProg (Program (fn : rest)) = do
   compileFn fn
   compileProg $ Program rest
 
+-- | Compile a function definition into a list of instructions.
 compileFn :: TopDef -> Gen ()
 compileFn (FnDef typ jlId args (Block blk)) = do
-  llvmArgs <- convertFnArgs args
+  llvmArgs <- generateFnArgList args
   emit L.Blank
-  emit $ L.FnDef (toLLVMType typ) jlId llvmArgs
-  emit $ L.LabelDef $ Ident "entry"
-  argsToStack args llvmArgs
-  newTop
+  emit $ L.FnDef (toLLVMType typ) (toLLVMIdent jlId) llvmArgs
+  labelInstr "entry"
+  compileFnArgVars args llvmArgs
+  newVarTop
   compileStmts blk
   if typ == Void
     then emit L.VReturn
     else emit L.Unreachable
-  discardTop
+  discardVarTop
   emit L.EndFnDef
   where
-    convertFnArgs :: [Arg] -> Gen [L.Arg]
-    convertFnArgs [] = return []
-    convertFnArgs (Argument typ jlId : rest) = do
-      llvmId <- newVarName
-      args <- convertFnArgs rest
-      return $ L.Argument (toLLVMType typ) (L.Loc llvmId) : args
-    argsToStack :: [Arg] -> [L.Arg] -> Gen ()
-    argsToStack [] [] = return ()
-    argsToStack (Argument _ jlId : rest1) (L.Argument typ llvmArgId : rest2) = do
-      llvmStackId <- newVarName
-      pushVar jlId llvmStackId
-      emit $ L.Alloca llvmStackId typ
-      emit $ L.Store typ llvmArgId llvmStackId
-      argsToStack rest1 rest2
+    generateFnArgList :: [Arg] -> Gen [L.Arg]
+    generateFnArgList [] = return []
+    generateFnArgList (Argument typ jlId : rest) = do
+      llvmArgId <- newVarName
+      args <- generateFnArgList rest
+      return $ L.Argument (toLLVMType typ) (L.Loc llvmArgId) : args
+    compileFnArgVars :: [Arg] -> [L.Arg] -> Gen ()
+    compileFnArgVars [] [] = return ()
+    compileFnArgVars (Argument typ jlId : rest1) (L.Argument _ llvmArgId : rest2) = do
+      llvmStackId <- newVarInstr jlId typ
+      emit $ L.Store (toLLVMType typ) llvmArgId llvmStackId
+      compileFnArgVars rest1 rest2
 
+-- | Compile a list of statements into a list of instructions.
 compileStmts :: [Stmt] -> Gen ()
 compileStmts [] = return ()
 compileStmts (stmt : stmts) = do
   compileStmt stmt
   compileStmts stmts
 
+-- | Compile a function definition into a list of instructions.
 compileStmt :: Stmt -> Gen ()
 compileStmt Empty = return ()
 compileStmt (BStmt (Block stmts)) = do
-  newTop
+  newVarTop
   compileStmts stmts
-  discardTop
+  discardVarTop
 compileStmt (Decl typ items) = do
   compileItems items typ
 compileStmt (Ass jlId expr@(ETyped _ typ)) = do
@@ -131,44 +160,44 @@ compileStmt (Decr jlId) = do
 compileStmt (Ret expr@(ETyped _ typ)) = do
   val <- compileExpr expr
   emit $ L.Return (toLLVMType typ) val
-compileStmt VRet = do
-  emit L.VReturn
+compileStmt VRet = emit L.VReturn
 compileStmt (Cond expr stmt) = do
   ifLabId <- newLabName
   endLabId <- newLabName
   val <- compileExpr expr
   emit $ L.Branch val ifLabId endLabId
-  emit $ L.LabelDef ifLabId
+  labelInstr ifLabId
   compileStmt stmt
   emit $ L.UncondBranch endLabId
-  emit $ L.LabelDef endLabId
+  labelInstr endLabId
 compileStmt (CondElse expr stmt1 stmt2) = do
   ifLabId <- newLabName
   elseLabId <- newLabName
   endLabId <- newLabName
   val <- compileExpr expr
   emit $ L.Branch val ifLabId elseLabId
-  emit $ L.LabelDef ifLabId
+  labelInstr ifLabId
   compileStmt stmt1
   emit $ L.UncondBranch endLabId
-  emit $ L.LabelDef elseLabId
+  labelInstr elseLabId
   compileStmt stmt2
   emit $ L.UncondBranch endLabId
-  emit $ L.LabelDef endLabId
+  labelInstr endLabId
 compileStmt (While expr stmt) = do
   topLabId <- newLabName
   loopLabId <- newLabName
   endLabId <- newLabName
   emit $ L.UncondBranch topLabId
-  emit $ L.LabelDef topLabId
+  labelInstr topLabId
   val <- compileExpr expr
   emit $ L.Branch val loopLabId endLabId
-  emit $ L.LabelDef loopLabId
+  labelInstr loopLabId
   compileStmt stmt
   emit $ L.UncondBranch topLabId
-  emit $ L.LabelDef endLabId
+  labelInstr endLabId
 compileStmt (SExp expr) = void $ compileExpr expr
 
+-- | Compile items of a variable declaration into a list of instructions.
 compileItems :: [Item] -> Type -> Gen ()
 compileItems [] _ = return ()
 compileItems (item : items) typ =
@@ -181,21 +210,8 @@ compileItems (item : items) typ =
       llvmId <- newVarInstr jlId typ
       emit $ L.Store (toLLVMType typ) val llvmId
       compileItems items typ
-  where
-    newVarInstr :: Ident -> Type -> Gen Ident
-    newVarInstr jlId typ = do
-      llvmId <- newVarName
-      pushVar jlId llvmId
-      emit $ L.Alloca llvmId (toLLVMType typ)
-      return llvmId
 
-loadVarInstr :: Ident -> Type -> Gen L.Value
-loadVarInstr jlId typ = do
-  llvmId <- lookupVar jlId
-  tempId <- newVarName
-  emit $ L.Load tempId (toLLVMType typ) llvmId
-  return $ L.Loc tempId
-
+-- | Compile a list of expressions into a list of instructions.
 compileExprs :: [Expr] -> Gen [L.Value]
 compileExprs [] = return []
 compileExprs (expr : exprs) = do
@@ -203,6 +219,7 @@ compileExprs (expr : exprs) = do
   vals <- compileExprs exprs
   return $ val : vals
 
+-- | Compile an expression into a list of instructions.
 compileExpr :: Expr -> Gen L.Value
 compileExpr (ETyped (EVar jlId) typ) = loadVarInstr jlId typ
 compileExpr (ETyped (ELitInt ival) Int) = return $ L.IConst (fromInteger ival)
@@ -211,12 +228,12 @@ compileExpr (ETyped ELitTrue Bool) = return $ L.BConst True
 compileExpr (ETyped ELitFalse Bool) = return $ L.BConst False
 compileExpr (ETyped (EApp jlId exprs) Void) = do
   vals <- compileExprs exprs
-  emit $ L.VCall jlId (zipArgs vals (getTypes exprs))
+  emit $ L.VCall (toLLVMIdent jlId) (zipArgs vals (getTypes exprs))
   return L.VConst
 compileExpr (ETyped (EApp jlId exprs) typ) = do
   vals <- compileExprs exprs
   llvmId <- newVarName
-  emit $ L.Call llvmId (toLLVMType typ) jlId (zipArgs vals (getTypes exprs))
+  emit $ L.Call llvmId (toLLVMType typ) (toLLVMIdent jlId) (zipArgs vals (getTypes exprs))
   return $ L.Loc llvmId
 compileExpr (ETyped (EString sval) String) = do
   let text = T.pack (sval ++ "\\00")
@@ -229,7 +246,6 @@ compileExpr (ETyped (EString sval) String) = do
 compileExpr (ETyped (ENeg expr) Doub) = do
   val <- compileExpr expr
   tempId <- newVarName
-  --emit $ L.FNeg tempId (toLLVMType Doub) val
   emit $ L.FMul tempId (toLLVMType Doub) val (L.DConst (-1))
   return $ L.Loc tempId
 compileExpr (ETyped (ENeg expr) Int) = do
@@ -274,42 +290,66 @@ compileExpr (ETyped (ERel expr1@(ETyped _ typ) op expr2) Bool) = do
   return $ L.Loc llvmId
 compileExpr (ETyped (EAnd expr1 expr2) Bool) = do
   trueLabId <- newLabName
-  resLabId <- newLabName
-  falseLabId <- newLabName
   endLabId <- newLabName
   val1 <- compileExpr expr1
-  emit $ L.Branch val1 trueLabId falseLabId
-  emit $ L.LabelDef trueLabId
+  beginLabId <- getCurrentLabel
+  emit $ L.Branch val1 trueLabId endLabId
+  labelInstr trueLabId
   val2 <- compileExpr expr2
-  emit $ L.UncondBranch resLabId
-  emit $ L.LabelDef resLabId
+  resLabId <- getCurrentLabel
   emit $ L.UncondBranch endLabId
-  emit $ L.LabelDef falseLabId
-  emit $ L.UncondBranch endLabId
-  emit $ L.LabelDef endLabId
+  labelInstr endLabId
   llvmId <- newVarName
-  emit $ L.Phi llvmId (toLLVMType Bool) [L.PhiElem val2 resLabId, L.PhiElem (L.BConst False) falseLabId]
+  emit $ L.Phi llvmId (toLLVMType Bool) [L.PhiElem val2 resLabId, L.PhiElem (L.BConst False) beginLabId]
   return $ L.Loc llvmId
 compileExpr (ETyped (EOr expr1 expr2) Bool) = do
-  trueLabId <- newLabName
-  resLabId <- newLabName
   falseLabId <- newLabName
   endLabId <- newLabName
   val1 <- compileExpr expr1
-  emit $ L.Branch val1 trueLabId falseLabId
-  emit $ L.LabelDef falseLabId
+  beginLabId <- getCurrentLabel
+  emit $ L.Branch val1 endLabId falseLabId
+  labelInstr falseLabId
   val2 <- compileExpr expr2
-  emit $ L.UncondBranch resLabId
-  emit $ L.LabelDef resLabId
+  resLabId <- getCurrentLabel
   emit $ L.UncondBranch endLabId
-  emit $ L.LabelDef trueLabId
-  emit $ L.UncondBranch endLabId
-  emit $ L.LabelDef endLabId
+  labelInstr endLabId
   llvmId <- newVarName
-  emit $ L.Phi llvmId (toLLVMType Bool) [L.PhiElem (L.BConst True) trueLabId, L.PhiElem val2 resLabId]
+  emit $ L.Phi llvmId (toLLVMType Bool) [L.PhiElem (L.BConst True) beginLabId, L.PhiElem val2 resLabId]
   return $ L.Loc llvmId
 compileExpr _ = error "No (matching) type annotation found!"
 
+-- * Shared functions for instruction generation
+
+-- | Emit an instruction to allocate stack space for a local variable. Returns
+-- the pointer to the allocated address. A new unique variable name for LLVM is
+-- generated.
+newVarInstr :: Ident -> Type -> Gen L.Ident
+newVarInstr jlId typ = do
+  llvmId <- newVarName
+  pushVar jlId llvmId
+  emit $ L.Alloca llvmId (toLLVMType typ)
+  return llvmId
+
+-- | Emit an instruction to load a variable by its name in the AST. A new unique
+-- variable name for LLVM is generated. The variable has to be pushed to the
+-- stack beforehand.
+loadVarInstr :: Ident -> Type -> Gen L.Value
+loadVarInstr jlId typ = do
+  llvmId <- lookupVar jlId
+  tempId <- newVarName
+  emit $ L.Load tempId (toLLVMType typ) llvmId
+  return $ L.Loc tempId
+
+-- | Emit a label instruction and update the currently set label. Don't emit
+-- 'L.LabelDef's manually.
+labelInstr :: L.Ident -> Gen ()
+labelInstr llvmLabId = do
+  setCurrentLabel llvmLabId
+  emit $ L.LabelDef llvmLabId
+
+-- * Conversion functions
+
+-- | Convert a 'Type' from the AST into an LLVM 'L.Type'
 toLLVMType :: Type -> L.Type
 toLLVMType Int = L.Int 32
 toLLVMType Doub = L.Doub
@@ -317,6 +357,8 @@ toLLVMType Bool = L.Int 1
 toLLVMType Void = L.Void
 toLLVMType String = L.Ptr $ L.Int 8
 
+-- | Convert a relational operator from the AST into an LLVM relational
+-- operator.
 toLLVMRelOp :: RelOp -> L.RelOp
 toLLVMRelOp LTH = L.Slt
 toLLVMRelOp LE = L.Sle
@@ -325,6 +367,8 @@ toLLVMRelOp GE = L.Sge
 toLLVMRelOp EQU = L.Eq
 toLLVMRelOp NE = L.Ne
 
+-- | Convert a relational operator from the AST into an LLVM relational operator
+-- for floating point numbers.
 toLLVMFRelOp :: RelOp -> L.FRelOp
 toLLVMFRelOp LTH = L.Olt
 toLLVMFRelOp LE = L.Ole
@@ -333,6 +377,13 @@ toLLVMFRelOp GE = L.Oge
 toLLVMFRelOp EQU = L.Oeq
 toLLVMFRelOp NE = L.One
 
+-- | Convert an 'Ident' from the AST into an 'L.Ident' for LLVM.
+toLLVMIdent :: Ident -> L.Ident
+toLLVMIdent (Ident name) = L.Ident name
+
+-- * Utility functions
+
+-- | Extract the types from a list of typed expressions.
 getTypes :: [Expr] -> [Type]
 getTypes [] = []
 getTypes (expr : exprs) =
@@ -340,102 +391,93 @@ getTypes (expr : exprs) =
     ETyped _ typ -> typ : getTypes exprs
     _ -> error "Not a typed expression!"
 
+-- | Zip a list of 'L.Value's and a list of 'Type's together to create a list of
+-- LLVM function arguments.
 zipArgs :: [L.Value] -> [Type] -> [L.Arg]
 zipArgs [] [] = []
 zipArgs (val : vals) (typ : types) = L.Argument (toLLVMType typ) val : zipArgs vals types
 
--- * Environment
+-- * Environment handling
 
+-- | An environment to save data used during compilation.
 data Env = Env
-  { vars :: [Map Ident Ident],
-    -- returns :: [ReturnState],
+  { vars :: [Map Ident L.Ident],
     nextVar :: Int,
     nextGlobVar :: Int,
-    nextLabel :: Int
+    nextLabel :: Int,
+    curLabel :: L.Ident
   }
 
+-- | Create an empty environment.
 emptyEnv :: Env
 emptyEnv =
   Env
     { vars = [Map.empty],
-      -- returns = [],
       nextVar = 0,
       nextGlobVar = 0,
-      nextLabel = 0
+      nextLabel = 0,
+      curLabel = ""
     }
 
--- | Discard the top context of the context stack.
-discardTop :: Gen ()
-discardTop = do
+-- | Add an empty entry on top of the variable stack.
+newVarTop :: Gen ()
+newVarTop = modify (\env -> env {vars = Map.empty : vars env})
+
+-- | Discard the top entry of the variable stack in the environment.
+discardVarTop :: Gen ()
+discardVarTop = do
   env <- get
   case vars env of
     top : rest -> put env {vars = rest}
     _ -> error "Variable stack already empty!"
 
--- case returns env of
---   top : rest -> put env {returns = rest}
---   _ -> error "Return state stack already empty!"
+-- | Register a new local variable in the environment. The variable is pushed
+-- into the top entry of the variable stack.
+pushVar :: Ident -> L.Ident -> Gen ()
+pushVar jlId llvmId = modify (\env -> env {vars = Map.insert jlId llvmId (head (vars env)) : tail (vars env)})
 
--- | Add an empty context on top of the context stack.
-newTop :: Gen ()
-newTop = do
-  env <- get
-  put env {vars = Map.empty : vars env}
-
---put env {vars = Map.empty : vars env, returns = NoReturn : returns env}
-
-newVarName :: Gen Ident
-newVarName = do
-  env <- get
-  let num = nextVar env
-  put env {nextVar = num + 1}
-  let llvmId = Ident $ "t" <> T.pack (show num)
-  return llvmId
-
-newGlobVarName :: Gen Ident
-newGlobVarName = do
-  env <- get
-  let num = nextGlobVar env
-  put env {nextGlobVar = num + 1}
-  let llvmGlobId = Ident $ "g" <> T.pack (show num)
-  return llvmGlobId
-
-newLabName :: Gen Ident
-newLabName = do
-  env <- get
-  let num = nextLabel env
-  put env {nextLabel = num + 1}
-  let llvmLabelId = Ident $ "lab" <> T.pack (show num)
-  return llvmLabelId
-
-pushVar :: Ident -> Ident -> Gen ()
-pushVar jlId llvmId = do
-  env <- get
-  put env {vars = Map.insert jlId llvmId (head (vars env)) : tail (vars env)}
-  return ()
-
-lookupVar :: Ident -> Gen Ident
+-- | Search for a local variable in the environment's variable stack. The
+-- variable is assumed to exist, otherwise an error is thrown.
+lookupVar :: Ident -> Gen L.Ident
 lookupVar jlId = gets (stackLookup jlId . vars)
   where
-    stackLookup :: Ident -> [Map Ident Ident] -> Ident
+    stackLookup :: Ident -> [Map Ident L.Ident] -> L.Ident
     stackLookup _ [] = error "Variable not found!"
     stackLookup jlId (map : stack) = case Map.lookup jlId map of
       Just llvmId -> llvmId
       Nothing -> stackLookup jlId stack
 
--- getReturnState :: Gen ReturnState
--- getReturnState = gets (head . returns)
+-- | Generate a new unique local variable name.
+newVarName :: Gen L.Ident
+newVarName = do
+  env <- get
+  let num = nextVar env
+  put env {nextVar = num + 1}
+  let llvmId = L.Ident $ "t" <> T.pack (show num)
+  return llvmId
 
--- setReturnState :: ReturnState -> Gen ()
--- setReturnState state = do
---   env <- get
---   case returns env of
---     ret : rest -> put $ env {returns = ret <> state : rest}
---     [] -> error "Empty return state list!"
+-- | Generate a new unique global variable name.
+newGlobVarName :: Gen L.Ident
+newGlobVarName = do
+  env <- get
+  let num = nextGlobVar env
+  put env {nextGlobVar = num + 1}
+  let llvmGlobId = L.Ident $ "g" <> T.pack (show num)
+  return llvmGlobId
 
--- overrideReturnState :: ReturnState -> Gen ()
--- overrideReturnState state = do
---   env <- get
---   case returns env of
---     ret : rest -> put $ env {returns = state : rest}
---     [] -> error "Empty return state list!"
+-- | Generate a new unique label name.
+newLabName :: Gen L.Ident
+newLabName = do
+  env <- get
+  let num = nextLabel env
+  put env {nextLabel = num + 1}
+  let llvmLabelId = L.Ident $ "lab" <> T.pack (show num)
+  return llvmLabelId
+
+-- | Get the label under which instructions are currently emitted.
+getCurrentLabel :: Gen L.Ident
+getCurrentLabel = gets curLabel
+
+-- | Set the label under which instructions are currently emitted.
+setCurrentLabel :: L.Ident -> Gen ()
+setCurrentLabel llvmLabId = modify (\env -> env {curLabel = llvmLabId})
