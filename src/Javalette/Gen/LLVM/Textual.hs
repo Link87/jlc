@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
 module Javalette.Gen.LLVM.Textual
   ( generateCode,
@@ -15,12 +16,14 @@ import qualified Javalette.Gen.LLVM.Instructions as L
 import Javalette.Lang.Abs (Ident (Ident))
 import qualified Javalette.Lang.Abs as J
 
+-- | Generate textual LLVM code from a list of 'Instruction's.
 generateCode :: [Instruction] -> Text
 generateCode = TL.toStrict . B.toLazyText . generateCode'
   where
     generateCode' :: [Instruction] -> Builder
     generateCode' = foldr ((\a b -> a <> "\n" <> b) . generateInstructionCode) ""
 
+-- | Assemble the textual LLVM code of a single LLVM instruction.
 generateInstructionCode :: Instruction -> Builder
 generateInstructionCode (L.FnDecl typ id args) =
   "declare "
@@ -272,6 +275,7 @@ generateInstructionCode (L.Phi id typ phis) =
     <> phiList phis
 generateInstructionCode L.Blank = ""
 
+-- | Get the representation of a 'L.Type' in LLVM.
 typeId :: L.Type -> Builder
 typeId (L.Ptr typ) = typeId typ <> B.singleton '*'
 typeId (L.Int prec) = B.singleton 'i' <> showInt prec
@@ -284,26 +288,37 @@ typeId (L.Arr size typ) =
     <> B.singleton ']'
 typeId L.Void = "void"
 
+-- | Assemble a representation of a list of 'L.Type's, separated by commas.
 typeList :: [L.Type] -> Builder
 typeList [] = ""
 typeList [typ] = typeId typ
 typeList (typ : types) = typeId typ <> ", " <> typeList types
 
+-- | Assemble a representation of an argument list, i.e. @['L.Arg']@. Each
+-- argument is a 'L.Value' preceded by a 'L.Type'. Arguments are sepatated by commas.
 argList :: [L.Arg] -> Builder
 argList [] = ""
 argList [L.Argument typ val] = typeId typ <> B.singleton ' ' <> valueRepr val
 argList (L.Argument typ val : types) = typeId typ <> B.singleton ' ' <> valueRepr val <> ", " <> argList types
 
+-- | Assemble a representation of a list of offsets of @getelementptr@. Each
+-- offset is represented as an integer offset value preceded by a 'L.Type'.
+-- Offset entries are sepatated by commas.
 offsetList :: [L.ElemOffset] -> Builder
 offsetList [] = ""
 offsetList [L.Offset typ off] = typeId typ <> B.singleton ' ' <> showInt off
 offsetList (L.Offset typ off : offsets) = typeId typ <> B.singleton ' ' <> showInt off <> ", " <> offsetList offsets
 
+-- | Assemble a representation of a list of predecessors of a @phi@ node. Each
+-- element is represented as a 'L.Value' followed by a label identifier.
+-- Entries are wrapped in brackets and separated by commas.
 phiList :: [L.PhiElem] -> Builder
 phiList [] = ""
 phiList [L.PhiElem val lab] = "[ " <> valueRepr val <> ", " <> llvmLocIdent lab <> " ]"
 phiList (L.PhiElem val lab : phis) = "[ " <> valueRepr val <> ", " <> llvmLocIdent lab <> " ], " <> phiList phis
 
+-- | Get the representation of a 'L.Value' in LLVM. Can either be a constant value
+-- or a local or global identifier.
 valueRepr :: L.Value -> Builder
 valueRepr (L.Loc id) = llvmLocIdent id
 valueRepr (L.Glob id) = llvmGlobIdent id
@@ -313,6 +328,7 @@ valueRepr (L.BConst True) = "true"
 valueRepr (L.BConst False) = "false"
 valueRepr L.VConst = error "A void has no value representation!"
 
+-- | Get the representation of a relational operator used by @icmp@ in LLVM.
 relOpRepr :: L.RelOp -> Builder
 relOpRepr L.Eq = "eq"
 relOpRepr L.Ne = "ne"
@@ -321,6 +337,7 @@ relOpRepr L.Sge = "sge"
 relOpRepr L.Slt = "slt"
 relOpRepr L.Sle = "sle"
 
+-- | Get the representation of a relational operator used by @fcmp@ in LLVM.
 fRelOpRepr :: L.FRelOp -> Builder
 fRelOpRepr L.Oeq = "oeq"
 fRelOpRepr L.One = "one"
@@ -329,20 +346,28 @@ fRelOpRepr L.Oge = "oge"
 fRelOpRepr L.Olt = "olt"
 fRelOpRepr L.Ole = "ole"
 
+-- | Convert an integer value into a 'Builder'.
 showInt :: Int -> Builder
 showInt = B.fromString . show
 
+-- | Convert a double value into a 'Builder'.
 showDouble :: Double -> Builder
 showDouble = B.fromString . show
 
+-- | Extract an identifier from an 'Ident' and convert it into a 'Builder'.
 ident :: Ident -> Builder
 ident (Ident name) = B.fromText name
 
+-- | Precede an 'Ident' with a @\@@ to convert it into a global variable name
+-- representation for LLVM and convert it into a 'Builder'.
 llvmGlobIdent :: Ident -> Builder
 llvmGlobIdent (Ident name) = B.singleton '@' <> B.fromText name
 
+-- | Precede an 'Ident' with a @%@ to convert it into a local variable name
+-- representation for LLVM and convert it into a 'Builder'.
 llvmLocIdent :: Ident -> Builder
 llvmLocIdent (Ident name) = B.singleton '%' <> B.fromText name
 
+-- | Indentation for LLVM instructions. Improves readability.
 indent :: Builder
 indent = "  "
