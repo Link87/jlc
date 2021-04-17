@@ -16,7 +16,6 @@ where
 
 import Data.String (IsString)
 import Data.Text (Text)
-import qualified Javalette.Lang.Abs as J
 
 -- | Possible types for values in LLVM.
 data Type
