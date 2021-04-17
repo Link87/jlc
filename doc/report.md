@@ -2,12 +2,18 @@
 
 ## Usage of JLC
 
-If given no arguments, the compiler expects its input from stdin and writes the
-intermediate representation, i.e. the AST, into stdout. The option `-o` can be
-used to specify a path where the Javalette file should be loaded from instead.
+If given no arguments, the compiler expects its input from stdin and writes its
+output to stdout. The option `-o` can be used to specify an output file, where
+jlc writes its output to instead. In addition, jlc can be supplied with the
+path to a Javalette file. jlc will load that file instead of expecting input
+from stdin.
 
-If the flag `-t` is specified, the compiler only performs a type check without
-printing the IR. With `-s` the compiler produces more eye-pleasing output. It
+The options `-t`, `-i` and `-l` can be used to specify the type of output.
+The default option is `-l`, on which the input is compiled to LLVM code.
+If the flag `-t` is specified, the compiler only performs a type check.
+On `-i`, the compiler prints its IR, i.e. an AST with type annotations.
+
+With `-s` the compiler produces more eye-pleasing output. It
 can be used if the compiler is not in automated testing or does not pipe its
 output into other programs (e.g. LLVM).
 
