@@ -27,18 +27,18 @@ import Data.Monoid (Endo (..), appEndo)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Javalette.Check.TypeCheck (AnnotatedProg)
-import Javalette.Gen.LLVM.Instructions (Instruction)
-import qualified Javalette.Gen.LLVM.Instructions as L
-import Javalette.Gen.LLVM.Textual (generateCode)
+import Javalette.Gen.LLVM.Instruction (Instruction)
+import qualified Javalette.Gen.LLVM.Instruction as L
+import Javalette.Gen.LLVM.Assembly (generateCode)
 import Javalette.Lang.Abs
 
 -- * Main function
 
--- | Generate an LLVM intermediate representation from a type-annotated AST.
+-- | Generate LLVM assembly from a type-annotated AST.
 --
 -- This uses two passes: First, the AST is converted in a list of
--- instuctions. Then, the list of instructions is converted into text from using
--- 'generateCode'.
+-- instuctions. Then, the list of instructions is converted into assembly code
+-- using 'generateCode'.
 generateIR :: AnnotatedProg -> Text
 generateIR prog = generateCode $ glob ++ code
   where

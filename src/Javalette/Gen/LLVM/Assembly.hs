@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
-module Javalette.Gen.LLVM.Textual
+module Javalette.Gen.LLVM.Assembly
   ( generateCode,
   )
 where
@@ -11,16 +11,16 @@ import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
 import Data.Text.Lazy.Builder (Builder)
 import qualified Data.Text.Lazy.Builder as B
-import Javalette.Gen.LLVM.Instructions
+import Javalette.Gen.LLVM.Instruction
 
--- | Generate textual LLVM code from a list of 'Instruction's.
+-- | Generate LLVM assembly code from a list of 'Instruction's.
 generateCode :: [Instruction] -> Text
 generateCode = TL.toStrict . B.toLazyText . generateCode'
   where
     generateCode' :: [Instruction] -> Builder
     generateCode' = foldr ((\a b -> a <> "\n" <> b) . generateInstructionCode) ""
 
--- | Assemble the textual LLVM code of a single LLVM instruction.
+-- | Generate LLVM assembly code for a single LLVM instruction.
 generateInstructionCode :: Instruction -> Builder
 generateInstructionCode (FnDecl typ id args) =
   "declare "
@@ -272,7 +272,7 @@ generateInstructionCode (Phi id typ phis) =
     <> phiList phis
 generateInstructionCode Blank = ""
 
--- | Get the representation of a 'Type' in LLVM.
+-- | Get the representation of a 'Type' in LLVM assembly.
 typeId :: Type -> Builder
 typeId (Ptr typ) = typeId typ <> B.singleton '*'
 typeId (Int prec) = B.singleton 'i' <> showInt prec
@@ -285,20 +285,20 @@ typeId (Arr size typ) =
     <> B.singleton ']'
 typeId Void = "void"
 
--- | Assemble a representation of a list of 'Type's, separated by commas.
+-- | Generate a representation of a list of 'Type's, separated by commas.
 typeList :: [Type] -> Builder
 typeList [] = ""
 typeList [typ] = typeId typ
 typeList (typ : types) = typeId typ <> ", " <> typeList types
 
--- | Assemble a representation of an argument list, i.e. @['Arg']@. Each
+-- | Generate a representation of an argument list, i.e. @['Arg']@. Each
 -- argument is a 'Value' preceded by a 'Type'. Arguments are sepatated by commas.
 argList :: [Arg] -> Builder
 argList [] = ""
 argList [Argument typ val] = typeId typ <> B.singleton ' ' <> valueRepr val
 argList (Argument typ val : types) = typeId typ <> B.singleton ' ' <> valueRepr val <> ", " <> argList types
 
--- | Assemble a representation of a list of offsets of @getelementptr@. Each
+-- | Generate a representation of a list of offsets of @getelementptr@. Each
 -- offset is represented as an integer offset value preceded by a 'Type'.
 -- Offset entries are sepatated by commas.
 offsetList :: [ElemOffset] -> Builder
@@ -306,7 +306,7 @@ offsetList [] = ""
 offsetList [Offset typ off] = typeId typ <> B.singleton ' ' <> showInt off
 offsetList (Offset typ off : offsets) = typeId typ <> B.singleton ' ' <> showInt off <> ", " <> offsetList offsets
 
--- | Assemble a representation of a list of predecessors of a @phi@ node. Each
+-- | Generate a representation of a list of predecessors of a @phi@ node. Each
 -- element is represented as a 'Value' followed by a label identifier.
 -- Entries are wrapped in brackets and separated by commas.
 phiList :: [PhiElem] -> Builder
@@ -314,8 +314,8 @@ phiList [] = ""
 phiList [PhiElem val lab] = "[ " <> valueRepr val <> ", " <> llvmLocIdent lab <> " ]"
 phiList (PhiElem val lab : phis) = "[ " <> valueRepr val <> ", " <> llvmLocIdent lab <> " ], " <> phiList phis
 
--- | Get the representation of a 'Value' in LLVM. Can either be a constant value
--- or a local or global identifier.
+-- | Get the representation of a 'Value' in LLVM assembly. Can either be a
+-- constant value or a local or global identifier.
 valueRepr :: Value -> Builder
 valueRepr (Loc id) = llvmLocIdent id
 valueRepr (Glob id) = llvmGlobIdent id

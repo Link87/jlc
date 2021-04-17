@@ -1,7 +1,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
-module Javalette.Gen.LLVM.Instructions
+module Javalette.Gen.LLVM.Instruction
   ( Instruction (..),
     Type (..),
     Ident (..),
@@ -69,7 +69,7 @@ data ElemOffset = Offset Type Int
 -- | A predecessor entry in a @phi@ node.
 data PhiElem = PhiElem Value Ident
 
--- | A LLVM instruction.
+-- | An LLVM instruction.
 data Instruction
   = -- | Function declaration: @declare \<ty\> \@\<name\>(\<args\>)@
     FnDecl Type Ident [Type]

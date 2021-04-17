@@ -3,6 +3,9 @@ cradle:
     - path: "./src/Javalette/Main.hs"
       component: "jlc:exe:jlc"
 
+    - path: "./src/Javalette/Check/Return.hs"
+      component: "jlc:exe:jlc"
+
     - path: "./src/Javalette/Check/TypeCheck.hs"
       component: "jlc:exe:jlc"
 
@@ -12,10 +15,10 @@ cradle:
     - path: "./src/Javalette/Gen/LLVM.hs"
       component: "jlc:exe:jlc"
 
-    - path: "./src/Javalette/Gen/LLVM/Instructions.hs"
+    - path: "./src/Javalette/Gen/LLVM/Assembly.hs"
       component: "jlc:exe:jlc"
 
-    - path: "./src/Javalette/Gen/LLVM/Textual.hs"
+    - path: "./src/Javalette/Gen/LLVM/Instruction.hs"
       component: "jlc:exe:jlc"
 
     - path: "./src/Javalette/Lang/Abs.hs"
