@@ -6,7 +6,8 @@ module Javalette.Gen.LLVM.Instructions
     Arg (..),
     RelOp (..),
     FRelOp (..),
-    ElemOffset(..),
+    ElemOffset (..),
+    PhiElem (..),
   )
 where
 
@@ -38,6 +39,8 @@ data FRelOp = Oeq | One | Ogt | Oge | Olt | Ole
 
 data ElemOffset = Offset Type Int
 
+data PhiElem = PhiElem Value Ident
+
 data Instruction
   = FnDecl Type Ident [Type]
   | FnDef Type Ident [Arg]
@@ -66,8 +69,9 @@ data Instruction
   | FSub Ident Type Value Value
   | FMul Ident Type Value Value
   | FDiv Ident Type Value Value
-  | FNeg Ident Type Value       -- Not supported on old LLVM versions
+  | FNeg Ident Type Value -- Not supported on old LLVM versions
   | And Ident Type Value Value
   | Or Ident Type Value Value
   | XOr Ident Type Value Value
+  | Phi Ident Type [PhiElem]
   | Blank

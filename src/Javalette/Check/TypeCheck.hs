@@ -297,7 +297,7 @@ inferExpr (EAnd expr1 expr2) = do
   return $ ETyped (EAnd annotated1 annotated2) Bool
 inferExpr (EOr expr1 expr2) = do
   (annotated1, annotated2) <- inferBin expr1 expr2 [Bool]
-  return $ ETyped (EAnd annotated1 annotated2) Bool
+  return $ ETyped (EOr annotated1 annotated2) Bool
 
 -- | Infer the type for an unary expression and return the expression augmented
 -- with type information. The inferred type has to be one of the given types.

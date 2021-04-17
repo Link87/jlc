@@ -263,6 +263,13 @@ generateInstructionCode (L.XOr id typ val1 val2) =
     <> valueRepr val1
     <> ", "
     <> valueRepr val2
+generateInstructionCode (L.Phi id typ phis) =
+  indent
+    <> llvmLocIdent id
+    <> " = phi "
+    <> typeId typ
+    <> B.singleton ' '
+    <> phiList phis
 generateInstructionCode L.Blank = ""
 
 typeId :: L.Type -> Builder
@@ -291,6 +298,11 @@ offsetList :: [L.ElemOffset] -> Builder
 offsetList [] = ""
 offsetList [L.Offset typ off] = typeId typ <> B.singleton ' ' <> showInt off
 offsetList (L.Offset typ off : offsets) = typeId typ <> B.singleton ' ' <> showInt off <> ", " <> offsetList offsets
+
+phiList :: [L.PhiElem] -> Builder
+phiList [] = ""
+phiList [L.PhiElem val lab] = "[ " <> valueRepr val <> ", " <> llvmLocIdent lab <> " ]"
+phiList (L.PhiElem val lab : phis) = "[ " <> valueRepr val <> ", " <> llvmLocIdent lab <> " ], " <> phiList phis
 
 valueRepr :: L.Value -> Builder
 valueRepr (L.Loc id) = llvmLocIdent id

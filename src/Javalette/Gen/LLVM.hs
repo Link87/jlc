@@ -77,7 +77,7 @@ compileFn (FnDef typ jlId args (Block blk)) = do
   compileStmts blk
   if typ == Void
     then emit L.VReturn
-    else emit L.Unreachable 
+    else emit L.Unreachable
   discardTop
   emit L.EndFnDef
   where
@@ -214,8 +214,8 @@ compileExpr (ETyped (EApp jlId exprs) Void) = do
   emit $ L.VCall jlId (zipArgs vals (getTypes exprs))
   return L.VConst
 compileExpr (ETyped (EApp jlId exprs) typ) = do
-  llvmId <- newVarName
   vals <- compileExprs exprs
+  llvmId <- newVarName
   emit $ L.Call llvmId (toLLVMType typ) jlId (zipArgs vals (getTypes exprs))
   return $ L.Loc llvmId
 compileExpr (ETyped (EString sval) String) = do
@@ -273,16 +273,40 @@ compileExpr (ETyped (ERel expr1@(ETyped _ typ) op expr2) Bool) = do
     Doub -> emit $ L.FCompare llvmId (toLLVMFRelOp op) (toLLVMType Doub) val1 val2
   return $ L.Loc llvmId
 compileExpr (ETyped (EAnd expr1 expr2) Bool) = do
+  trueLabId <- newLabName
+  resLabId <- newLabName
+  falseLabId <- newLabName
+  endLabId <- newLabName
   val1 <- compileExpr expr1
+  emit $ L.Branch val1 trueLabId falseLabId
+  emit $ L.LabelDef trueLabId
   val2 <- compileExpr expr2
+  emit $ L.UncondBranch resLabId
+  emit $ L.LabelDef resLabId
+  emit $ L.UncondBranch endLabId
+  emit $ L.LabelDef falseLabId
+  emit $ L.UncondBranch endLabId
+  emit $ L.LabelDef endLabId
   llvmId <- newVarName
-  emit $ L.And llvmId (toLLVMType Bool) val1 val2
+  emit $ L.Phi llvmId (toLLVMType Bool) [L.PhiElem val2 resLabId, L.PhiElem (L.BConst False) falseLabId]
   return $ L.Loc llvmId
 compileExpr (ETyped (EOr expr1 expr2) Bool) = do
+  trueLabId <- newLabName
+  resLabId <- newLabName
+  falseLabId <- newLabName
+  endLabId <- newLabName
   val1 <- compileExpr expr1
+  emit $ L.Branch val1 trueLabId falseLabId
+  emit $ L.LabelDef falseLabId
   val2 <- compileExpr expr2
+  emit $ L.UncondBranch resLabId
+  emit $ L.LabelDef resLabId
+  emit $ L.UncondBranch endLabId
+  emit $ L.LabelDef trueLabId
+  emit $ L.UncondBranch endLabId
+  emit $ L.LabelDef endLabId
   llvmId <- newVarName
-  emit $ L.Or llvmId (toLLVMType Bool) val1 val2
+  emit $ L.Phi llvmId (toLLVMType Bool) [L.PhiElem (L.BConst True) trueLabId, L.PhiElem val2 resLabId]
   return $ L.Loc llvmId
 compileExpr _ = error "No (matching) type annotation found!"
 
@@ -315,7 +339,7 @@ getTypes (expr : exprs) =
   case expr of
     ETyped _ typ -> typ : getTypes exprs
     _ -> error "Not a typed expression!"
-  
+
 zipArgs :: [L.Value] -> [Type] -> [L.Arg]
 zipArgs [] [] = []
 zipArgs (val : vals) (typ : types) = L.Argument (toLLVMType typ) val : zipArgs vals types
@@ -347,16 +371,18 @@ discardTop = do
   case vars env of
     top : rest -> put env {vars = rest}
     _ -> error "Variable stack already empty!"
-  -- case returns env of
-  --   top : rest -> put env {returns = rest}
-  --   _ -> error "Return state stack already empty!"
+
+-- case returns env of
+--   top : rest -> put env {returns = rest}
+--   _ -> error "Return state stack already empty!"
 
 -- | Add an empty context on top of the context stack.
 newTop :: Gen ()
 newTop = do
   env <- get
   put env {vars = Map.empty : vars env}
-  --put env {vars = Map.empty : vars env, returns = NoReturn : returns env}
+
+--put env {vars = Map.empty : vars env, returns = NoReturn : returns env}
 
 newVarName :: Gen Ident
 newVarName = do
