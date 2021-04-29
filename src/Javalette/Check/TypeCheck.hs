@@ -22,6 +22,7 @@ import Control.Monad.State
     StateT (StateT),
     evalStateT,
   )
+import Debug.Trace
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Javalette.Check.Return (ReturnState(..), both)
@@ -298,6 +299,20 @@ inferExpr (EAnd expr1 expr2) = do
 inferExpr (EOr expr1 expr2) = do
   (annotated1, annotated2) <- inferBin expr1 expr2 [Bool]
   return $ ETyped (EOr annotated1 annotated2) Bool
+inferExpr (ENewArr typ expr) = do
+  annotated <- checkExpr expr Int
+  return $ ETyped (ENewArr typ annotated) (Array typ)
+inferExpr (EArrInd id expr) = do
+  annotated <- checkExpr expr Int
+  typ <- lookupVar id
+  case typ of
+    (Array inner) -> return $ ETyped (EArrInd id annotated) inner
+    _  -> throwError $ TypeMismatch typ (Array Void)
+inferExpr (EArrLen expr) = do
+  annotated <- inferExpr expr
+  case annotated of
+    (ETyped inner (Array typ)) -> return $ ETyped (EArrLen annotated) Int
+    (ETyped inner typ) -> throwError $ TypeMismatch typ (Array Void)
 
 -- | Infer the type for an unary expression and return the expression augmented
 -- with type information. The inferred type has to be one of the given types.

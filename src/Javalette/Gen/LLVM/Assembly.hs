@@ -40,7 +40,7 @@ generateInstructionCode (FnDef typ id args) =
     <> ") {"
 generateInstructionCode EndFnDef = B.singleton '}'
 generateInstructionCode (LabelDef id) = ident id <> B.singleton ':'
-generateInstructionCode (StringDef id typ (SConst text)) =
+generateInstructionCode (StringDef id typ (TConst text)) =
   llvmGlobIdent id
     <> " = internal constant "
     <> typeId typ
@@ -82,6 +82,26 @@ generateInstructionCode (GetElementPtr id1 typ id2 offsets) =
     <> valueRepr id2
     <> ", "
     <> offsetList offsets
+generateInstructionCode (PtrToInt id typ1 val typ2) =
+  indent
+    <> llvmLocIdent id
+    <> " = ptrtoint "
+    <> typeId typ1
+    <> B.singleton ' '
+    <> valueRepr val
+    <> B.singleton ' '
+    <> " to "
+    <> typeId typ2
+generateInstructionCode (Bitcast id typ1 val typ2) =
+  indent
+    <> llvmLocIdent id
+    <> " = bitcast "
+    <> typeId typ1
+    <> B.singleton ' '
+    <> valueRepr val
+    <> B.singleton ' '
+    <> " to "
+    <> typeId typ2
 generateInstructionCode (Call id1 typ id2 args) =
   indent
     <> llvmLocIdent id1
@@ -284,6 +304,7 @@ typeId (Arr size typ) =
     <> typeId typ
     <> B.singleton ']'
 typeId Void = "void"
+typeId (Struct elems) = B.singleton '{' <> typeList elems <> B.singleton '}'
 
 -- | Generate a representation of a list of 'Type's, separated by commas.
 typeList :: [Type] -> Builder
@@ -324,6 +345,14 @@ valueRepr (DConst dval) = showDouble dval
 valueRepr (BConst True) = "true"
 valueRepr (BConst False) = "false"
 valueRepr VConst = error "A void has no value representation!"
+valueRepr (SConst vals) = B.singleton '{' <> valueList vals <> B.singleton '}'
+valueRepr NullPtr = "null"
+
+-- | Generate a representation of a list of 'Type's, separated by commas.
+valueList :: [Value] -> Builder
+valueList [] = ""
+valueList [val] = valueRepr val
+valueList (val : vals) = valueRepr val <> ", " <> valueList vals
 
 -- | Get the representation of a relational operator used by @icmp@ in LLVM.
 relOpRepr :: RelOp -> Builder

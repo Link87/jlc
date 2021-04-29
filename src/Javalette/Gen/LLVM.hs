@@ -84,6 +84,7 @@ compile prog = do
   emitGlob $ L.FnDecl L.Void "printString" [L.Ptr $ L.Int 8]
   emitGlob $ L.FnDecl (L.Int 32) "readInt" []
   emitGlob $ L.FnDecl L.Doub "readDouble" []
+  emitGlob $ L.FnDecl (L.Ptr $ L.Int 8) "calloc" [L.Int 32, L.Int 32]
   emitGlob L.Blank
   compileProg prog
 
@@ -239,7 +240,7 @@ compileExpr (ETyped (EString sval) String) = do
   let text = T.pack (sval ++ "\\00")
   let typ = L.Arr (length sval + 1) (L.Int 8)
   llvmGlobId <- newGlobVarName
-  emitGlob $ L.StringDef llvmGlobId typ (L.SConst text)
+  emitGlob $ L.StringDef llvmGlobId typ (L.TConst text)
   llvmLocId <- newVarName
   emit $ L.GetElementPtr llvmLocId typ (L.Glob llvmGlobId) [L.Offset (L.Int 32) 0, L.Offset (L.Int 32) 0]
   return $ L.Loc llvmLocId
@@ -316,6 +317,32 @@ compileExpr (ETyped (EOr expr1 expr2) Bool) = do
   llvmId <- newVarName
   emit $ L.Phi llvmId (toLLVMType Bool) [L.PhiElem (L.BConst True) beginLabId, L.PhiElem val2 resLabId]
   return $ L.Loc llvmId
+compileExpr (ETyped (ENewArr typ expr) (Array _)) = do
+  let llvmType = toLLVMType typ
+  let llvmStructType = L.Struct [L.Int 32, L.Ptr llvmType]
+  len <- compileExpr expr
+  llvmPtrId <- newVarName
+  llvmLenId <- newVarName
+  llvmMemId <- newVarName
+  llvmMemExtId <- newVarName
+  llvmStructId <- newVarName
+  llvmSLenId <- newVarName
+  llvmSPtrId <- newVarName
+  llvmId <- newVarName
+  emit $ L.GetElementPtr llvmPtrId llvmType L.NullPtr [L.Offset (L.Int 32) 1]
+  emit $ L.PtrToInt llvmLenId (L.Ptr llvmType) (L.Loc llvmPtrId) (L.Int 32)
+  emit $ L.Call llvmMemId (L.Ptr $ L.Int 8) "calloc" [L.Argument (L.Int 32) len, L.Argument (L.Int 32) (L.Loc llvmLenId)]
+  emit $ L.Bitcast llvmMemExtId (L.Ptr $ L.Int 8) (L.Loc llvmMemId) (L.Ptr $ L.Int 32)
+  emit $ L.Alloca llvmStructId llvmStructType
+  emit $ L.GetElementPtr llvmSLenId llvmStructType (L.Loc llvmStructId) [L.Offset (L.Int 32) 0, L.Offset (L.Int 32) 0]
+  emit $ L.Store (L.Int 32) len llvmSLenId
+  emit $ L.GetElementPtr llvmSPtrId llvmStructType (L.Loc llvmStructId) [L.Offset (L.Int 32) 0, L.Offset (L.Int 32) 1]
+  emit $ L.Store (L.Ptr llvmType) (L.Loc llvmMemExtId) llvmSPtrId
+  emit $ L.Load llvmId llvmStructType llvmStructId
+  return $ L.Loc llvmId
+compileExpr (ETyped (EArrLen expr) Int) = do
+  emit L.Blank
+  return $ L.IConst 0
 compileExpr _ = error "No (matching) type annotation found!"
 
 -- * Shared functions for instruction generation
@@ -356,6 +383,7 @@ toLLVMType Doub = L.Doub
 toLLVMType Bool = L.Int 1
 toLLVMType Void = L.Void
 toLLVMType String = L.Ptr $ L.Int 8
+toLLVMType (Array typ) = L.Struct [L.Int 32, L.Ptr (toLLVMType typ)]
 
 -- | Convert a relational operator from the AST into an LLVM relational
 -- operator.

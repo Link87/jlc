@@ -27,12 +27,14 @@ data Type
     Doub
   | -- | An LLVM array of a certain length and type.
     Arr Int Type
+  | 
+    Struct [Type]
   | -- | The LLVM @void@ type.
     Void
 
 -- | An LLVM identifier.
 newtype Ident = Ident Text
-  deriving IsString
+  deriving (IsString)
 
 -- | Possible values that can be handed to LLVM instructions. Can either be
 -- constant values or local or global variables.
@@ -48,9 +50,11 @@ data Value
   | -- | A constant boolean value.
     BConst Bool
   | -- | A constant string value.
-    SConst Text
+    TConst Text
+  | SConst [Value]
   | -- | A constant void value. Cannot exist in LLVM.
     VConst
+  | NullPtr
 
 -- | An argument in a function definition or function call.
 data Arg = Argument Type Value
@@ -89,6 +93,9 @@ data Instruction
     Load Ident Type Ident
   | -- | @getelementptr@ instruction: @\<result\> = getelementptr \<ty\>, \<ty\>* \<pointer\>{, \<ty\> \<offset\>}*@
     GetElementPtr Ident Type Value [ElemOffset]
+  | -- | @ptrtoint@ instruction: @\<result\> = ptrtoint \<ty\> \<value\> to \<ty2\>@
+    PtrToInt Ident Type Value Type
+  | Bitcast Ident Type Value Type
   | -- | @call@ instruction (non-void): @\<result\> = call \<ty\> \<fnname\>(\<function args\>)@
     Call Ident Type Ident [Arg]
   | -- | @call@ instruction (void): @call void \<fnname\>(\<function args\>)@

@@ -62,23 +62,25 @@ internal   Fun. Type ::= Type "(" [Type] ")" ;
 
 internal   String. Type ::= "String" ; -- addition
 
+Array.     Type ::= Type "[]";
+
 separator  Type "," ;
 
 -- Expressions ---------------------------------------------
 
-EVar.      Expr6 ::= Ident ;
+EVar.      Expr7 ::= Ident ;
 
-ELitInt.   Expr6 ::= Integer ;
+ELitInt.   Expr7 ::= Integer ;
 
-ELitDoub.  Expr6 ::= Double;
+ELitDoub.  Expr7 ::= Double;
 
-ELitTrue.  Expr6 ::= "true" ;
+ELitTrue.  Expr7 ::= "true" ;
 
-ELitFalse. Expr6 ::= "false" ;
+ELitFalse. Expr7 ::= "false" ;
 
-EApp.      Expr6 ::= Ident "(" [Expr] ")" ;
+EApp.      Expr7 ::= Ident "(" [Expr] ")" ;
 
-EString.   Expr6 ::= String ;
+EString.   Expr7 ::= String ;
 
 ENeg.       Expr5 ::= "-" Expr6 ;
 
@@ -94,11 +96,17 @@ EAnd.      Expr1 ::= Expr2 "&&" Expr1 ;
 
 EOr.       Expr ::= Expr1 "||" Expr ;
 
-coercions  Expr 6 ;
+coercions  Expr 7 ;
 
 separator  Expr "," ;
 
 internal ETyped. Expr ::= "[" Expr ":" Type "]" ; -- addition
+
+ENewArr.   Expr6 ::= "new" Type "[" Expr "]";
+
+EArrInd.   Expr6 ::= Ident "[" Expr "]";
+
+EArrLen.   Expr6 ::= Expr "." "length";
 
 -- operators -----------------------------------------------
 
