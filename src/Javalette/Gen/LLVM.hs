@@ -27,9 +27,9 @@ import Data.Monoid (Endo (..), appEndo)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Javalette.Check.TypeCheck (AnnotatedProg)
+import Javalette.Gen.LLVM.Assembly (generateCode)
 import Javalette.Gen.LLVM.Instruction (Instruction)
 import qualified Javalette.Gen.LLVM.Instruction as L
-import Javalette.Gen.LLVM.Assembly (generateCode)
 import Javalette.Lang.Abs
 
 -- * Main function
@@ -97,12 +97,12 @@ compileProg (Program (fn : rest)) = do
 
 -- | Compile a function definition into a list of instructions.
 compileFn :: TopDef -> Gen ()
-compileFn (FnDef typ jlId args (Block blk)) = do
-  llvmArgs <- generateFnArgList args
+compileFn (FnDef typ jlId params (Block blk)) = do
+  llvmParams <- generateFnParamList params
   emit L.Blank
-  emit $ L.FnDef (toLLVMType typ) (toLLVMIdent jlId) llvmArgs
+  emit $ L.FnDef (toLLVMType typ) (toLLVMIdent jlId) llvmParams
   labelInstr "entry"
-  compileFnArgVars args llvmArgs
+  compileFnArgVars params llvmParams
   newVarTop
   compileStmts blk
   if typ == Void
@@ -111,17 +111,17 @@ compileFn (FnDef typ jlId args (Block blk)) = do
   discardVarTop
   emit L.EndFnDef
   where
-    generateFnArgList :: [Arg] -> Gen [L.Arg]
-    generateFnArgList [] = return []
-    generateFnArgList (Argument typ jlId : rest) = do
+    generateFnParamList :: [Arg] -> Gen [L.Param]
+    generateFnParamList [] = return []
+    generateFnParamList (Argument typ jlId : rest) = do
       llvmArgId <- newVarName
-      args <- generateFnArgList rest
-      return $ L.Argument (toLLVMType typ) (L.Loc llvmArgId) : args
-    compileFnArgVars :: [Arg] -> [L.Arg] -> Gen ()
+      args <- generateFnParamList rest
+      return $ L.Parameter (toLLVMType typ) llvmArgId : args
+    compileFnArgVars :: [Arg] -> [L.Param] -> Gen ()
     compileFnArgVars [] [] = return ()
-    compileFnArgVars (Argument typ jlId : rest1) (L.Argument _ llvmArgId : rest2) = do
+    compileFnArgVars (Argument typ jlId : rest1) (L.Parameter _ llvmArgId : rest2) = do
       llvmStackId <- newVarInstr jlId typ
-      emit $ L.Store (toLLVMType typ) llvmArgId llvmStackId
+      emit $ L.Store (toLLVMType typ) (L.Loc llvmArgId) llvmStackId
       compileFnArgVars rest1 rest2
 
 -- | Compile a list of statements into a list of instructions.
@@ -319,30 +319,30 @@ compileExpr (ETyped (EOr expr1 expr2) Boolean) = do
   return $ L.Loc llvmId
 compileExpr (ETyped (EArrInit typ expr) (Array _)) = do
   let llvmType = toLLVMType typ
-  let llvmStructType = L.Struct [L.Int 32, L.Ptr llvmType]
+  let llvmArrType = L.Struct [L.Int 32, L.Ptr llvmType]
   len <- compileExpr expr
-  llvmPtrId <- newVarName
+  llvmNullId <- newVarName
   llvmLenId <- newVarName
   llvmMemId <- newVarName
   llvmMemExtId <- newVarName
   llvmStructId <- newVarName
-  llvmSLenId <- newVarName
-  llvmSPtrId <- newVarName
+  llvmLenEntryId <- newVarName
   llvmId <- newVarName
-  emit $ L.GetElementPtr llvmPtrId llvmType L.NullPtr [L.Offset (L.Int 32) 1]
-  emit $ L.PtrToInt llvmLenId (L.Ptr llvmType) (L.Loc llvmPtrId) (L.Int 32)
+  emit $ L.GetElementPtr llvmNullId llvmType L.NullPtr [L.Offset (L.Int 32) 1]
+  emit $ L.PtrToInt llvmLenId (L.Ptr llvmType) (L.Loc llvmNullId) (L.Int 32)
   emit $ L.Call llvmMemId (L.Ptr $ L.Int 8) "calloc" [L.Argument (L.Int 32) len, L.Argument (L.Int 32) (L.Loc llvmLenId)]
   emit $ L.Bitcast llvmMemExtId (L.Ptr $ L.Int 8) (L.Loc llvmMemId) (L.Ptr $ L.Int 32)
-  emit $ L.Alloca llvmStructId llvmStructType
-  emit $ L.GetElementPtr llvmSLenId llvmStructType (L.Loc llvmStructId) [L.Offset (L.Int 32) 0, L.Offset (L.Int 32) 0]
-  emit $ L.Store (L.Int 32) len llvmSLenId
-  emit $ L.GetElementPtr llvmSPtrId llvmStructType (L.Loc llvmStructId) [L.Offset (L.Int 32) 0, L.Offset (L.Int 32) 1]
-  emit $ L.Store (L.Ptr llvmType) (L.Loc llvmMemExtId) llvmSPtrId
-  emit $ L.Load llvmId llvmStructType llvmStructId
+  emit $ L.Alloca llvmStructId llvmArrType
+  emit $ L.InsertValue llvmLenEntryId llvmArrType (L.CConst [(L.Int 32, L.Undef), (L.Ptr llvmType, L.Undef)]) (L.Int 32) len [0]
+  emit $ L.InsertValue llvmId llvmArrType (L.Loc llvmLenEntryId) (L.Ptr llvmType) (L.Loc llvmMemExtId) [1]
+  emit $ L.Store llvmArrType (L.Loc llvmId) llvmStructId
   return $ L.Loc llvmId
 compileExpr (ETyped (EArrLen expr) Int) = do
-  emit L.Blank
-  return $ L.IConst 0
+  let llvmArrType = toLLVMType $ getType expr
+  val <- compileExpr expr
+  llvmId <- newVarName
+  emit $ L.ExtractValue llvmId llvmArrType val [0]
+  return $ L.Loc llvmId
 compileExpr _ = error "No (matching) type annotation found!"
 
 -- * Shared functions for instruction generation
@@ -411,13 +411,14 @@ toLLVMIdent (Ident name) = L.Ident name
 
 -- * Utility functions
 
+-- | Extract the type of a single typed expression.
+getType :: Expr -> Type
+getType (ETyped _ typ) = typ
+getType _ = error "Not a typed expression!"
+
 -- | Extract the types from a list of typed expressions.
 getTypes :: [Expr] -> [Type]
-getTypes [] = []
-getTypes (expr : exprs) =
-  case expr of
-    ETyped _ typ -> typ : getTypes exprs
-    _ -> error "Not a typed expression!"
+getTypes = map getType
 
 -- | Zip a list of 'L.Value's and a list of 'Type's together to create a list of
 -- LLVM function arguments.

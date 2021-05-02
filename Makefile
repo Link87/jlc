@@ -53,7 +53,7 @@ COMPILE_OUTPUT := $(LL_FILE:.ll=)
 endif
 LLVM_RUNTIME := lib$(SEP)runtime.ll
 
-ASSIGNMENT := B
+ASSIGNMENT := C
 TRY := 1
 TAR_NAME := part$(ASSIGNMENT)-$(TRY).tar.gz
 
@@ -70,7 +70,7 @@ ifeq ($(OS),Windows_NT)
 endif
 
 test: $(GENERATED) $(TAR_NAME)
-	cd test && python3 testing.py ../$(TAR_NAME) --llvm
+	cd test && python3 testing.py ../$(TAR_NAME) --llvm -x arrays1
 
 test-tc: $(GENERATED) $(TAR_NAME)
 	cd test && python3 testing.py ../$(TAR_NAME)

@@ -6,6 +6,7 @@ module Javalette.Gen.LLVM.Instruction
     Type (..),
     Ident (..),
     Value (..),
+    Param (..),
     Arg (..),
     RelOp (..),
     FRelOp (..),
@@ -51,12 +52,19 @@ data Value
     BConst Bool
   | -- | A constant string value.
     SConst Text
+  | -- | A constant compound (struct) type value.
+    CConst [(Type, Value)]
   | -- | The @null@ pointer.
     NullPtr
+  | -- | An undefined (@undef@) value.
+    Undef
   | -- | An empty value. Has no LLVM representation.
     None
 
--- | An argument in a function definition or function call.
+-- | A parameter in a function definition.
+data Param = Parameter Type Ident
+
+-- | An argument in a function call.
 data Arg = Argument Type Value
 
 -- | Relational operators of the @icmp@ instruction. We only support signed
@@ -75,16 +83,20 @@ data PhiElem = PhiElem Value Ident
 
 -- | An LLVM instruction.
 data Instruction
-  = -- | Function declaration: @declare \<ty\> \@\<name\>(\<args\>)@
+  = -- | Function declaration: @declare \<ty\> \@\<name\>(\<params\>)@
     FnDecl Type Ident [Type]
-  | -- | Function definition: @define \<ty\> \@\<name\>(\<args\>) {@
-    FnDef Type Ident [Arg]
+  | -- | Function definition: @define \<ty\> \@\<name\>(\<params\>) {@
+    FnDef Type Ident [Param]
   | -- | End of Function definition: @}@
     EndFnDef
   | -- | Label definition: @\<label\>:@
     LabelDef Ident
   | -- | String definition: @\@\<id\> = internal constant [\<len\> x i8] c"\<string\>\\00"@
     StringDef Ident Type Value
+  | -- | @extractvalue@ instruction: @\<result\> = extractvalue \<aggregate type\> \<val\>, \<idx\>{, <idx>}*@
+    ExtractValue Ident Type Value [Int]
+  | -- | @insertvalue@ instruction: @\<result\> = insertvalue \<aggregate type\> \<val\>, \<ty\> \<elt\>, \<idx\>{, <idx>}*@
+    InsertValue Ident Type Value Type Value [Int]
   | -- | @alloca@ instruction: @\<result\> = alloca \<ty\>@
     Alloca Ident Type
   | -- | @store@ instruction: @store \<ty\> \<value\>, \<ty\>* \<pointer\>@

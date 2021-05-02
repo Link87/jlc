@@ -36,7 +36,7 @@ generateInstructionCode (FnDef typ id args) =
     <> B.singleton ' '
     <> llvmGlobIdent id
     <> B.singleton '('
-    <> argList args
+    <> paramList args
     <> ") {"
 generateInstructionCode EndFnDef = B.singleton '}'
 generateInstructionCode (LabelDef id) = ident id <> B.singleton ':'
@@ -47,6 +47,28 @@ generateInstructionCode (StringDef id typ (SConst text)) =
     <> " c\""
     <> B.fromText text
     <> "\""
+generateInstructionCode (ExtractValue id typ val indices) =
+  indent
+    <> llvmLocIdent id
+    <> " = extractvalue "
+    <> typeId typ
+    <> B.singleton ' '
+    <> valueRepr val
+    <> ", "
+    <> indexList indices
+generateInstructionCode (InsertValue id typ1 val typ2 elem indices) =
+  indent
+    <> llvmLocIdent id
+    <> " = insertvalue "
+    <> typeId typ1
+    <> B.singleton ' '
+    <> valueRepr val
+    <> ", "
+    <> typeId typ2
+    <> B.singleton ' '
+    <> valueRepr elem
+    <> ", "
+    <> indexList indices
 generateInstructionCode (Alloca id typ) =
   indent
     <> llvmLocIdent id
@@ -99,7 +121,6 @@ generateInstructionCode (Bitcast id typ1 val typ2) =
     <> typeId typ1
     <> B.singleton ' '
     <> valueRepr val
-    <> B.singleton ' '
     <> " to "
     <> typeId typ2
 generateInstructionCode (Call id1 typ id2 args) =
@@ -306,34 +327,48 @@ typeId (Array size typ) =
 typeId (Struct elems) = B.singleton '{' <> typeList elems <> B.singleton '}'
 typeId Void = "void"
 
+-- | Generate a comma separated list of elements, where each element is
+-- formatted using a format function.
+listRepr :: (a -> Builder) -> [a] -> Builder
+listRepr _ [] = ""
+listRepr f [elem] = f elem
+listRepr f (elem : elems) = f elem <> ", " <> listRepr f elems
+
 -- | Generate a representation of a list of 'Type's, separated by commas.
 typeList :: [Type] -> Builder
-typeList [] = ""
-typeList [typ] = typeId typ
-typeList (typ : types) = typeId typ <> ", " <> typeList types
+typeList = listRepr typeId
+
+-- | Generate a representation of a list of 'Type's and 'Value's, separated by
+-- commas.
+typedValueList :: [(Type, Value)] -> Builder
+typedValueList = listRepr (\(typ, val) -> typeId typ <> B.singleton ' ' <> valueRepr val)
+
+-- | Generate a representation of a list of integer values, separated by commas.
+indexList :: [Int] -> Builder
+indexList = listRepr showInt
+
+-- | Generate a representation of a parameter list, i.e. @['Param']@. Each
+-- parameter is an 'Ident' preceded by a 'Type'. Parameters are sepatated by
+-- commas.
+paramList :: [Param] -> Builder
+paramList = listRepr (\(Parameter typ id) -> typeId typ <> B.singleton ' ' <> valueRepr (Loc id))
 
 -- | Generate a representation of an argument list, i.e. @['Arg']@. Each
 -- argument is a 'Value' preceded by a 'Type'. Arguments are sepatated by commas.
 argList :: [Arg] -> Builder
-argList [] = ""
-argList [Argument typ val] = typeId typ <> B.singleton ' ' <> valueRepr val
-argList (Argument typ val : types) = typeId typ <> B.singleton ' ' <> valueRepr val <> ", " <> argList types
+argList = listRepr (\(Argument typ val) -> typeId typ <> B.singleton ' ' <> valueRepr val)
 
 -- | Generate a representation of a list of offsets of @getelementptr@. Each
 -- offset is represented as an integer offset value preceded by a 'Type'.
 -- Offset entries are sepatated by commas.
 offsetList :: [ElemOffset] -> Builder
-offsetList [] = ""
-offsetList [Offset typ off] = typeId typ <> B.singleton ' ' <> showInt off
-offsetList (Offset typ off : offsets) = typeId typ <> B.singleton ' ' <> showInt off <> ", " <> offsetList offsets
+offsetList = listRepr (\(Offset typ off) -> typeId typ <> B.singleton ' ' <> showInt off)
 
 -- | Generate a representation of a list of predecessors of a @phi@ node. Each
 -- element is represented as a 'Value' followed by a label identifier.
 -- Entries are wrapped in brackets and separated by commas.
 phiList :: [PhiElem] -> Builder
-phiList [] = ""
-phiList [PhiElem val lab] = "[ " <> valueRepr val <> ", " <> llvmLocIdent lab <> " ]"
-phiList (PhiElem val lab : phis) = "[ " <> valueRepr val <> ", " <> llvmLocIdent lab <> " ], " <> phiList phis
+phiList = listRepr (\(PhiElem val lab) -> "[ " <> valueRepr val <> ", " <> llvmLocIdent lab <> " ]")
 
 -- | Get the representation of a 'Value' in LLVM assembly. Can either be a
 -- constant value or a local or global identifier.
@@ -345,15 +380,10 @@ valueRepr (DConst dval) = showDouble dval
 valueRepr (BConst True) = "true"
 valueRepr (BConst False) = "false"
 valueRepr (SConst _) = error "Cannot use strings in LLVM directly."
--- valueRepr (CConst vals) = B.singleton '{' <> valueList vals <> B.singleton '}'
+valueRepr (CConst vals) = B.singleton '{' <> typedValueList vals <> B.singleton '}'
 valueRepr NullPtr = "null"
+valueRepr Undef = "undef"
 valueRepr None = error "'None' has no LLVM representation!"
-
--- | Generate a representation of a list of 'Type's, separated by commas.
-valueList :: [Value] -> Builder
-valueList [] = ""
-valueList [val] = valueRepr val
-valueList (val : vals) = valueRepr val <> ", " <> valueList vals
 
 -- | Get the representation of a relational operator used by @icmp@ in LLVM.
 relOpRepr :: RelOp -> Builder
