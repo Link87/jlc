@@ -40,7 +40,7 @@ generateInstructionCode (FnDef typ id args) =
     <> ") {"
 generateInstructionCode EndFnDef = B.singleton '}'
 generateInstructionCode (LabelDef id) = ident id <> B.singleton ':'
-generateInstructionCode (StringDef id typ (TConst text)) =
+generateInstructionCode (StringDef id typ (SConst text)) =
   llvmGlobIdent id
     <> " = internal constant "
     <> typeId typ
@@ -296,15 +296,15 @@ generateInstructionCode Blank = ""
 typeId :: Type -> Builder
 typeId (Ptr typ) = typeId typ <> B.singleton '*'
 typeId (Int prec) = B.singleton 'i' <> showInt prec
-typeId Doub = "double"
-typeId (Arr size typ) =
+typeId Double = "double"
+typeId (Array size typ) =
   B.singleton '['
     <> showInt size
     <> " x "
     <> typeId typ
     <> B.singleton ']'
-typeId Void = "void"
 typeId (Struct elems) = B.singleton '{' <> typeList elems <> B.singleton '}'
+typeId Void = "void"
 
 -- | Generate a representation of a list of 'Type's, separated by commas.
 typeList :: [Type] -> Builder
@@ -344,9 +344,10 @@ valueRepr (IConst ival) = showInt ival
 valueRepr (DConst dval) = showDouble dval
 valueRepr (BConst True) = "true"
 valueRepr (BConst False) = "false"
-valueRepr VConst = error "A void has no value representation!"
-valueRepr (SConst vals) = B.singleton '{' <> valueList vals <> B.singleton '}'
+valueRepr (SConst _) = error "Cannot use strings in LLVM directly."
+-- valueRepr (CConst vals) = B.singleton '{' <> valueList vals <> B.singleton '}'
 valueRepr NullPtr = "null"
+valueRepr None = error "'None' has no LLVM representation!"
 
 -- | Generate a representation of a list of 'Type's, separated by commas.
 valueList :: [Value] -> Builder

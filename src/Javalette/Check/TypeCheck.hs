@@ -49,9 +49,9 @@ check prog = do
   -- First pass: save fns and check for main function
   ctx <- saveFns prog
   case lookupContextEntry (Ident "main") ctx of
-    Just (Fun Int []) -> Ok ctx
-    Just (Fun Int _) -> Err MainArguments
-    Just (Fun _ _) -> Err MainReturnType
+    Just (Fn Int []) -> Ok ctx
+    Just (Fn Int _) -> Err MainArguments
+    Just (Fn _ _) -> Err MainReturnType
     Nothing -> Err MainNotFound
   -- Second pass: check types of fns
   runChk ctx $ checkProgram prog
@@ -74,7 +74,7 @@ saveFns (Program (fn : fns)) = do
 
 -- | Get the 'ContextEntry' of the function.
 saveSignature :: TopDef -> TypeResult ContextEntry
-saveSignature (FnDef typ id args _blk) = Ok (id, Fun typ (argTypes args))
+saveSignature (FnDef typ id args _blk) = Ok (id, Fn typ (argTypes args))
   where
     argTypes :: [Arg] -> [Type]
     argTypes [] = []
@@ -165,7 +165,7 @@ checkStmt VRet ret =
     then setReturnState Return >> return VRet
     else throwError $ TypeMismatch ret Void
 checkStmt (Cond expr stmt) ret = do
-  annotatedExpr <- checkExpr expr Bool
+  annotatedExpr <- checkExpr expr Boolean
   state <- getReturnState
   annnotatedStmt <- checkStmt stmt ret
   case expr of
@@ -174,7 +174,7 @@ checkStmt (Cond expr stmt) ret = do
       overrideReturnState state
       return $ Cond annotatedExpr annnotatedStmt
 checkStmt (CondElse expr stmt1 stmt2) ret = do
-  annotatedExpr <- checkExpr expr Bool
+  annotatedExpr <- checkExpr expr Boolean
   state <- getReturnState
   annotatedStmt1 <- checkStmt stmt1 ret
   branch1 <- getReturnState
@@ -192,7 +192,7 @@ checkStmt (CondElse expr stmt1 stmt2) ret = do
       overrideReturnState (state <> both branch1 branch2)
       return $ CondElse annotatedExpr annotatedStmt1 annotatedStmt2
 checkStmt (While expr stmt) ret = do
-  annotatedExpr <- checkExpr expr Bool
+  annotatedExpr <- checkExpr expr Boolean
   state <- getReturnState
   annotatedStatement <- checkStmt stmt ret
   case expr of
@@ -200,9 +200,9 @@ checkStmt (While expr stmt) ret = do
     _ -> do
       overrideReturnState state
       return $ While annotatedExpr annotatedStatement
-checkStmt (SExp expr) _ = do
+checkStmt (SExpr expr) _ = do
   annotated <- checkExpr expr Void
-  return $ SExp annotated
+  return $ SExpr annotated
 
 -- | Typecheck a single expression. Returns the input augmented with type
 -- annotations if succesful or throws a `TypeError` otherwise.
@@ -244,14 +244,14 @@ checkItems (item : items) typ = case item of
 -- | Typecheck the arguments of a function call. Returns the input augmented
 -- with type annotations if succesful or throws a `TypeError` otherwise.
 checkFnArgs :: [Expr] -> Type -> Chk [Expr]
-checkFnArgs exprs fntype@(Fun ret types) = case (exprs, types) of
+checkFnArgs exprs fntype@(Fn ret types) = case (exprs, types) of
   ([], []) -> return []
   (expr : exprs, typ : types) -> do
     annotated <- inferExpr expr
     let inferred = getType annotated
     if inferred == typ
       then do
-        next <- checkFnArgs exprs (Fun ret types)
+        next <- checkFnArgs exprs (Fn ret types)
         return $ annotated : next
       else throwError $ TypeMismatch inferred typ
   (_, _) -> throwError ArgumentMismatch
@@ -263,56 +263,57 @@ checkFnArgs _exprs typ = throwError $ ExpectedFnType typ
 inferExpr :: Expr -> Chk Expr
 inferExpr expr@(EVar id) = ETyped expr <$> lookupVar id
 inferExpr expr@(ELitInt _) = return $ ETyped expr Int
-inferExpr expr@(ELitDoub _) = return $ ETyped expr Doub
-inferExpr ELitTrue = return $ ETyped ELitTrue Bool
-inferExpr ELitFalse = return $ ETyped ELitFalse Bool
+inferExpr expr@(ELitDoub _) = return $ ETyped expr Double
+inferExpr ELitTrue = return $ ETyped ELitTrue Boolean
+inferExpr ELitFalse = return $ ETyped ELitFalse Boolean
 inferExpr (EApp id exprs) = do
   typ <- lookupVar id
   annotated <- checkFnArgs exprs typ
   -- only type with return type of function, not with function type itself
   case typ of
-    (Fun ret _) -> return $ ETyped (EApp id annotated) ret
+    (Fn ret _) -> return $ ETyped (EApp id annotated) ret
     _ -> error "Not a function but expected a function."
 inferExpr expr@(EString _) = return $ ETyped expr String
 inferExpr (ENeg expr) = do
-  annotated <- inferUn expr [Int, Doub]
+  annotated <- inferUn expr [Int, Double]
   return $ ETyped (ENeg annotated) (getType annotated)
 inferExpr (ENot expr) = do
-  annotated <- checkExpr expr Bool
-  return $ ETyped (ENot annotated) Bool
+  annotated <- checkExpr expr Boolean
+  return $ ETyped (ENot annotated) Boolean
 inferExpr (EMul expr1 op expr2) = do
   (annotated1, annotated2) <- inferBin expr1 expr2 exprType
   return $ ETyped (EMul annotated1 op annotated2) (getType annotated1)
   where
-    exprType = if op == Mod then [Int] else [Int, Doub]
+    exprType = if op == Mod then [Int] else [Int, Double]
 inferExpr (EAdd expr1 op expr2) = do
-  (annotated1, annotated2) <- inferBin expr1 expr2 [Int, Doub]
+  (annotated1, annotated2) <- inferBin expr1 expr2 [Int, Double]
   return $ ETyped (EAdd annotated1 op annotated2) (getType annotated1)
 inferExpr (ERel expr1 op expr2) = do
   (annotated1, annotated2) <- inferBin expr1 expr2 exprType
-  return $ ETyped (ERel annotated1 op annotated2) Bool
+  return $ ETyped (ERel annotated1 op annotated2) Boolean
   where
-    exprType = if op == EQU || op == NE then [Int, Doub, Bool] else [Int, Doub]
+    exprType = if op == EQU || op == NE then [Int, Double, Boolean] else [Int, Double]
 inferExpr (EAnd expr1 expr2) = do
-  (annotated1, annotated2) <- inferBin expr1 expr2 [Bool]
-  return $ ETyped (EAnd annotated1 annotated2) Bool
+  (annotated1, annotated2) <- inferBin expr1 expr2 [Boolean]
+  return $ ETyped (EAnd annotated1 annotated2) Boolean
 inferExpr (EOr expr1 expr2) = do
-  (annotated1, annotated2) <- inferBin expr1 expr2 [Bool]
-  return $ ETyped (EOr annotated1 annotated2) Bool
-inferExpr (ENewArr typ expr) = do
+  (annotated1, annotated2) <- inferBin expr1 expr2 [Boolean]
+  return $ ETyped (EOr annotated1 annotated2) Boolean
+inferExpr (EArrInit typ expr) = do
   annotated <- checkExpr expr Int
-  return $ ETyped (ENewArr typ annotated) (Array typ)
-inferExpr (EArrInd id expr) = do
+  return $ ETyped (EArrInit typ annotated) (Array typ)
+inferExpr (EArrIndex id expr) = do
   annotated <- checkExpr expr Int
   typ <- lookupVar id
   case typ of
-    (Array inner) -> return $ ETyped (EArrInd id annotated) inner
+    (Array inner) -> return $ ETyped (EArrIndex id annotated) inner
     _  -> throwError $ TypeMismatch typ (Array Void)
 inferExpr (EArrLen expr) = do
   annotated <- inferExpr expr
   case annotated of
     (ETyped inner (Array typ)) -> return $ ETyped (EArrLen annotated) Int
     (ETyped inner typ) -> throwError $ TypeMismatch typ (Array Void)
+
 
 -- | Infer the type for an unary expression and return the expression augmented
 -- with type information. The inferred type has to be one of the given types.
@@ -365,11 +366,11 @@ emptyContext = (Map.empty, NoReturn)
 -- | Context that contains the prelude functions of Javalette.
 preludeContext :: Context
 preludeContext =
-  insertContextEntry (Ident "printInt", Fun Void [Int]) $
-    insertContextEntry (Ident "printDouble", Fun Void [Doub]) $
-      insertContextEntry (Ident "printString", Fun Void [String]) $
-        insertContextEntry (Ident "readInt", Fun Int []) $
-          insertContextEntry (Ident "readDouble", Fun Doub []) emptyContext
+  insertContextEntry (Ident "printInt", Fn Void [Int]) $
+    insertContextEntry (Ident "printDouble", Fn Void [Double]) $
+      insertContextEntry (Ident "printString", Fn Void [String]) $
+        insertContextEntry (Ident "readInt", Fn Int []) $
+          insertContextEntry (Ident "readDouble", Fn Double []) emptyContext
 
 -- | Insert an entry into a `Context`.
 insertContextEntry :: ContextEntry -> Context -> Context

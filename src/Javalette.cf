@@ -46,19 +46,19 @@ CondElse.  Stmt ::= "if" "(" Expr ")" Stmt "else" Stmt  ;
 
 While.     Stmt ::= "while" "(" Expr ")" Stmt ;
 
-SExp.      Stmt ::= Expr  ";" ;
+SExpr.      Stmt ::= Expr  ";" ;
 
 -- Types ---------------------------------------------------
 
 Int.       Type ::= "int" ;
 
-Doub.      Type ::= "double" ;
+Double.      Type ::= "double" ;
 
-Bool.      Type ::= "boolean" ;
+Boolean.      Type ::= "boolean" ;
 
 Void.      Type ::= "void" ;
 
-internal   Fun. Type ::= Type "(" [Type] ")" ;
+internal   Fn. Type ::= Type "(" [Type] ")" ;
 
 internal   String. Type ::= "String" ; -- addition
 
@@ -102,9 +102,9 @@ separator  Expr "," ;
 
 internal ETyped. Expr ::= "[" Expr ":" Type "]" ; -- addition
 
-ENewArr.   Expr6 ::= "new" Type "[" Expr "]";
+EArrInit.   Expr6 ::= "new" Type "[" Expr "]";
 
-EArrInd.   Expr6 ::= Ident "[" Expr "]";
+EArrIndex.   Expr6 ::= Ident "[" Expr "]";
 
 EArrLen.   Expr6 ::= Expr "." "length";
 

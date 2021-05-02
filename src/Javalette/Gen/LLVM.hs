@@ -80,10 +80,10 @@ emitGlob instr = tell $ Endo ((mempty, [instr]) <>)
 compile :: AnnotatedProg -> Gen ()
 compile prog = do
   emitGlob $ L.FnDecl L.Void "printInt" [L.Int 32]
-  emitGlob $ L.FnDecl L.Void "printDouble" [L.Doub]
+  emitGlob $ L.FnDecl L.Void "printDouble" [L.Double]
   emitGlob $ L.FnDecl L.Void "printString" [L.Ptr $ L.Int 8]
   emitGlob $ L.FnDecl (L.Int 32) "readInt" []
-  emitGlob $ L.FnDecl L.Doub "readDouble" []
+  emitGlob $ L.FnDecl L.Double "readDouble" []
   emitGlob $ L.FnDecl (L.Ptr $ L.Int 8) "calloc" [L.Int 32, L.Int 32]
   emitGlob L.Blank
   compileProg prog
@@ -196,7 +196,7 @@ compileStmt (While expr stmt) = do
   compileStmt stmt
   emit $ L.UncondBranch topLabId
   labelInstr endLabId
-compileStmt (SExp expr) = void $ compileExpr expr
+compileStmt (SExpr expr) = void $ compileExpr expr
 
 -- | Compile items of a variable declaration into a list of instructions.
 compileItems :: [Item] -> Type -> Gen ()
@@ -224,13 +224,13 @@ compileExprs (expr : exprs) = do
 compileExpr :: Expr -> Gen L.Value
 compileExpr (ETyped (EVar jlId) typ) = loadVarInstr jlId typ
 compileExpr (ETyped (ELitInt ival) Int) = return $ L.IConst (fromInteger ival)
-compileExpr (ETyped (ELitDoub dval) Doub) = return $ L.DConst dval
-compileExpr (ETyped ELitTrue Bool) = return $ L.BConst True
-compileExpr (ETyped ELitFalse Bool) = return $ L.BConst False
+compileExpr (ETyped (ELitDoub dval) Double) = return $ L.DConst dval
+compileExpr (ETyped ELitTrue Boolean) = return $ L.BConst True
+compileExpr (ETyped ELitFalse Boolean) = return $ L.BConst False
 compileExpr (ETyped (EApp jlId exprs) Void) = do
   vals <- compileExprs exprs
   emit $ L.VCall (toLLVMIdent jlId) (zipArgs vals (getTypes exprs))
-  return L.VConst
+  return L.None
 compileExpr (ETyped (EApp jlId exprs) typ) = do
   vals <- compileExprs exprs
   llvmId <- newVarName
@@ -238,26 +238,26 @@ compileExpr (ETyped (EApp jlId exprs) typ) = do
   return $ L.Loc llvmId
 compileExpr (ETyped (EString sval) String) = do
   let text = T.pack (sval ++ "\\00")
-  let typ = L.Arr (length sval + 1) (L.Int 8)
+  let typ = L.Array (length sval + 1) (L.Int 8)
   llvmGlobId <- newGlobVarName
-  emitGlob $ L.StringDef llvmGlobId typ (L.TConst text)
+  emitGlob $ L.StringDef llvmGlobId typ (L.SConst text)
   llvmLocId <- newVarName
   emit $ L.GetElementPtr llvmLocId typ (L.Glob llvmGlobId) [L.Offset (L.Int 32) 0, L.Offset (L.Int 32) 0]
   return $ L.Loc llvmLocId
-compileExpr (ETyped (ENeg expr) Doub) = do
+compileExpr (ETyped (ENeg expr) Double) = do
   val <- compileExpr expr
   tempId <- newVarName
-  emit $ L.FMul tempId (toLLVMType Doub) val (L.DConst (-1))
+  emit $ L.FMul tempId (toLLVMType Double) val (L.DConst (-1))
   return $ L.Loc tempId
 compileExpr (ETyped (ENeg expr) Int) = do
   val <- compileExpr expr
   tempId <- newVarName
   emit $ L.Mul tempId (toLLVMType Int) val (L.IConst (-1))
   return $ L.Loc tempId
-compileExpr (ETyped (ENot expr) Bool) = do
+compileExpr (ETyped (ENot expr) Boolean) = do
   val <- compileExpr expr
   llvmId <- newVarName
-  emit $ L.XOr llvmId (toLLVMType Bool) val (L.BConst True)
+  emit $ L.XOr llvmId (toLLVMType Boolean) val (L.BConst True)
   return $ L.Loc llvmId
 compileExpr (ETyped (EMul expr1 op expr2) typ) = do
   val1 <- compileExpr expr1
@@ -267,8 +267,8 @@ compileExpr (ETyped (EMul expr1 op expr2) typ) = do
     (Int, Times) -> emit $ L.Mul llvmId (toLLVMType Int) val1 val2
     (Int, Div) -> emit $ L.SDiv llvmId (toLLVMType Int) val1 val2
     (Int, Mod) -> emit $ L.SRem llvmId (toLLVMType Int) val1 val2
-    (Doub, Times) -> emit $ L.FMul llvmId (toLLVMType Doub) val1 val2
-    (Doub, Div) -> emit $ L.FDiv llvmId (toLLVMType Doub) val1 val2
+    (Double, Times) -> emit $ L.FMul llvmId (toLLVMType Double) val1 val2
+    (Double, Div) -> emit $ L.FDiv llvmId (toLLVMType Double) val1 val2
   return $ L.Loc llvmId
 compileExpr (ETyped (EAdd expr1 op expr2) typ) = do
   val1 <- compileExpr expr1
@@ -277,19 +277,19 @@ compileExpr (ETyped (EAdd expr1 op expr2) typ) = do
   case (typ, op) of
     (Int, Plus) -> emit $ L.Add llvmId (toLLVMType Int) val1 val2
     (Int, Minus) -> emit $ L.Sub llvmId (toLLVMType Int) val1 val2
-    (Doub, Plus) -> emit $ L.FAdd llvmId (toLLVMType Doub) val1 val2
-    (Doub, Minus) -> emit $ L.FSub llvmId (toLLVMType Doub) val1 val2
+    (Double, Plus) -> emit $ L.FAdd llvmId (toLLVMType Double) val1 val2
+    (Double, Minus) -> emit $ L.FSub llvmId (toLLVMType Double) val1 val2
   return $ L.Loc llvmId
-compileExpr (ETyped (ERel expr1@(ETyped _ typ) op expr2) Bool) = do
+compileExpr (ETyped (ERel expr1@(ETyped _ typ) op expr2) Boolean) = do
   val1 <- compileExpr expr1
   val2 <- compileExpr expr2
   llvmId <- newVarName
   case typ of
     Int -> emit $ L.ICompare llvmId (toLLVMRelOp op) (toLLVMType Int) val1 val2
-    Bool -> emit $ L.ICompare llvmId (toLLVMRelOp op) (toLLVMType Bool) val1 val2
-    Doub -> emit $ L.FCompare llvmId (toLLVMFRelOp op) (toLLVMType Doub) val1 val2
+    Boolean -> emit $ L.ICompare llvmId (toLLVMRelOp op) (toLLVMType Boolean) val1 val2
+    Double -> emit $ L.FCompare llvmId (toLLVMFRelOp op) (toLLVMType Double) val1 val2
   return $ L.Loc llvmId
-compileExpr (ETyped (EAnd expr1 expr2) Bool) = do
+compileExpr (ETyped (EAnd expr1 expr2) Boolean) = do
   trueLabId <- newLabName
   endLabId <- newLabName
   val1 <- compileExpr expr1
@@ -301,9 +301,9 @@ compileExpr (ETyped (EAnd expr1 expr2) Bool) = do
   emit $ L.UncondBranch endLabId
   labelInstr endLabId
   llvmId <- newVarName
-  emit $ L.Phi llvmId (toLLVMType Bool) [L.PhiElem val2 resLabId, L.PhiElem (L.BConst False) beginLabId]
+  emit $ L.Phi llvmId (toLLVMType Boolean) [L.PhiElem val2 resLabId, L.PhiElem (L.BConst False) beginLabId]
   return $ L.Loc llvmId
-compileExpr (ETyped (EOr expr1 expr2) Bool) = do
+compileExpr (ETyped (EOr expr1 expr2) Boolean) = do
   falseLabId <- newLabName
   endLabId <- newLabName
   val1 <- compileExpr expr1
@@ -315,9 +315,9 @@ compileExpr (ETyped (EOr expr1 expr2) Bool) = do
   emit $ L.UncondBranch endLabId
   labelInstr endLabId
   llvmId <- newVarName
-  emit $ L.Phi llvmId (toLLVMType Bool) [L.PhiElem (L.BConst True) beginLabId, L.PhiElem val2 resLabId]
+  emit $ L.Phi llvmId (toLLVMType Boolean) [L.PhiElem (L.BConst True) beginLabId, L.PhiElem val2 resLabId]
   return $ L.Loc llvmId
-compileExpr (ETyped (ENewArr typ expr) (Array _)) = do
+compileExpr (ETyped (EArrInit typ expr) (Array _)) = do
   let llvmType = toLLVMType typ
   let llvmStructType = L.Struct [L.Int 32, L.Ptr llvmType]
   len <- compileExpr expr
@@ -379,8 +379,8 @@ labelInstr llvmLabId = do
 -- | Convert a 'Type' from the AST into an LLVM 'L.Type'
 toLLVMType :: Type -> L.Type
 toLLVMType Int = L.Int 32
-toLLVMType Doub = L.Doub
-toLLVMType Bool = L.Int 1
+toLLVMType Double = L.Double
+toLLVMType Boolean = L.Int 1
 toLLVMType Void = L.Void
 toLLVMType String = L.Ptr $ L.Int 8
 toLLVMType (Array typ) = L.Struct [L.Int 32, L.Ptr (toLLVMType typ)]

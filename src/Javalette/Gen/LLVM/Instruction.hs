@@ -24,10 +24,10 @@ data Type
   | -- | An integer value with a certain number of bits.
     Int Int
   | -- | An LLVM @double@ value.
-    Doub
+    Double
   | -- | An LLVM array of a certain length and type.
-    Arr Int Type
-  | 
+    Array Int Type
+  | -- | An LLVM struct.
     Struct [Type]
   | -- | The LLVM @void@ type.
     Void
@@ -50,11 +50,11 @@ data Value
   | -- | A constant boolean value.
     BConst Bool
   | -- | A constant string value.
-    TConst Text
-  | SConst [Value]
-  | -- | A constant void value. Cannot exist in LLVM.
-    VConst
-  | NullPtr
+    SConst Text
+  | -- | The @null@ pointer.
+    NullPtr
+  | -- | An empty value. Has no LLVM representation.
+    None
 
 -- | An argument in a function definition or function call.
 data Arg = Argument Type Value
@@ -95,7 +95,8 @@ data Instruction
     GetElementPtr Ident Type Value [ElemOffset]
   | -- | @ptrtoint@ instruction: @\<result\> = ptrtoint \<ty\> \<value\> to \<ty2\>@
     PtrToInt Ident Type Value Type
-  | Bitcast Ident Type Value Type
+  | -- | @bitcast@ instruction: @\<result\> = bitcast \<ty\> \<value\> to \<ty2\>@
+    Bitcast Ident Type Value Type
   | -- | @call@ instruction (non-void): @\<result\> = call \<ty\> \<fnname\>(\<function args\>)@
     Call Ident Type Ident [Arg]
   | -- | @call@ instruction (void): @call void \<fnname\>(\<function args\>)@
