@@ -22,10 +22,10 @@ import Control.Monad.State
     StateT (StateT),
     evalStateT,
   )
-import Debug.Trace
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Javalette.Check.Return (ReturnState(..), both)
+import Debug.Trace
+import Javalette.Check.Return (ReturnState (..), both)
 import Javalette.Lang.Abs
 import Javalette.Lang.Print (printTree)
 
@@ -150,12 +150,19 @@ checkStmt (BStmt (Block stmts)) ret = do
 checkStmt (Decl typ items) _ = do
   annotated <- checkItems items typ
   return $ Decl typ annotated
-checkStmt (Ass id expr) _ = do
-  typ <- lookupVar id
-  annotated <- checkExpr expr typ
-  return $ Ass id annotated
-checkStmt stmt@(Incr id) _ = checkVar id Int >> return stmt
-checkStmt stmt@(Decr id) _ = checkVar id Int >> return stmt
+checkStmt (Ass expr1 expr2) _ = do
+  lval <- coerceLVal expr1
+  typ <- lookupVar lval
+  annotated <- checkExpr expr2 typ
+  return $ Ass (ETyped (ELValue lval) typ) annotated
+checkStmt (Incr expr) _ = do
+  lval <- coerceLVal expr
+  checkVar lval Int
+  return $ Incr (ELValue lval)
+checkStmt (Decr expr) _ = do
+  lval <- coerceLVal expr
+  checkVar lval Int
+  return $ Decr (ELValue lval)
 checkStmt (Ret expr) ret = do
   annotated <- checkExpr expr ret
   setReturnState Return
@@ -194,12 +201,21 @@ checkStmt (CondElse expr stmt1 stmt2) ret = do
 checkStmt (While expr stmt) ret = do
   annotatedExpr <- checkExpr expr Boolean
   state <- getReturnState
-  annotatedStatement <- checkStmt stmt ret
+  annotatedStmt <- checkStmt stmt ret
   case expr of
-    ELitTrue -> return $ While annotatedExpr annotatedStatement
+    ELitTrue -> return $ While annotatedExpr annotatedStmt
     _ -> do
       overrideReturnState state
-      return $ While annotatedExpr annotatedStatement
+      return $ While annotatedExpr annotatedStmt
+checkStmt (ForEach typ id expr stmt) ret = do
+  annotatedExpr <- checkExpr expr (Array typ)
+  newTop
+  extendContext (id, typ)
+  state <- getReturnState
+  annotatedStmt <- checkStmt stmt ret
+  discardTop
+  overrideReturnState state
+  return $ ForEach typ id annotatedExpr annotatedStmt
 checkStmt (SExpr expr) _ = do
   annotated <- checkExpr expr Void
   return $ SExpr annotated
@@ -215,9 +231,9 @@ checkExpr expr typ = do
     else throwError $ TypeMismatch inferred typ
 
 -- | Check a variable's type. Throws a `TypeError` on type mismatch.
-checkVar :: Ident -> Type -> Chk ()
-checkVar id typ = do
-  saved <- lookupVar id
+checkVar :: LValue -> Type -> Chk ()
+checkVar lval typ = do
+  saved <- lookupVar lval
   if saved == typ
     then return ()
     else throwError $ TypeMismatch saved typ
@@ -261,13 +277,13 @@ checkFnArgs _exprs typ = throwError $ ExpectedFnType typ
 -- any subexpressions with type annotations. Typechecks subexpressions, which
 -- can lead to a `TypeError` being throwin.
 inferExpr :: Expr -> Chk Expr
-inferExpr expr@(EVar id) = ETyped expr <$> lookupVar id
+inferExpr expr@(EVar id) = ETyped expr <$> lookupVar (Id id)
 inferExpr expr@(ELitInt _) = return $ ETyped expr Int
 inferExpr expr@(ELitDoub _) = return $ ETyped expr Double
 inferExpr ELitTrue = return $ ETyped ELitTrue Boolean
 inferExpr ELitFalse = return $ ETyped ELitFalse Boolean
 inferExpr (EApp id exprs) = do
-  typ <- lookupVar id
+  typ <- lookupVar (Id id)
   annotated <- checkFnArgs exprs typ
   -- only type with return type of function, not with function type itself
   case typ of
@@ -299,21 +315,20 @@ inferExpr (EAnd expr1 expr2) = do
 inferExpr (EOr expr1 expr2) = do
   (annotated1, annotated2) <- inferBin expr1 expr2 [Boolean]
   return $ ETyped (EOr annotated1 annotated2) Boolean
-inferExpr (EArrInit typ expr) = do
+inferExpr (EArrAlloc typ expr) = do
   annotated <- checkExpr expr Int
-  return $ ETyped (EArrInit typ annotated) (Array typ)
-inferExpr (EArrIndex id expr) = do
-  annotated <- checkExpr expr Int
-  typ <- lookupVar id
-  case typ of
-    (Array inner) -> return $ ETyped (EArrIndex id annotated) inner
-    _  -> throwError $ TypeMismatch typ (Array Void)
+  return $ ETyped (EArrAlloc typ annotated) (Array typ)
+inferExpr (EArrIndex expr1 expr2) = do
+  annotatedArr <- inferExpr expr1
+  annotatedIndex <- checkExpr expr2 Int
+  case annotatedArr of
+    (ETyped _ (Array inner)) -> return $ ETyped (EArrIndex annotatedArr annotatedIndex) inner
+    (ETyped _ typ) -> throwError $ TypeMismatch typ (Array Void)
 inferExpr (EArrLen expr) = do
   annotated <- inferExpr expr
   case annotated of
     (ETyped inner (Array typ)) -> return $ ETyped (EArrLen annotated) Int
     (ETyped inner typ) -> throwError $ TypeMismatch typ (Array Void)
-
 
 -- | Infer the type for an unary expression and return the expression augmented
 -- with type information. The inferred type has to be one of the given types.
@@ -341,6 +356,17 @@ inferBin expr1 expr2 types = do
     else throwError $ TypeMismatchOverloaded inferred types
 
 -- * Type checking helper functions
+
+-- | Transmute an expression into an lvalue. Performs type checks on nested
+-- expressions. Fails with a 'TypeError', if an expression cannot occur as an
+-- lvalue.
+coerceLVal :: Expr -> Chk LValue
+coerceLVal (EVar id) = return $ Id id
+coerceLVal (EArrIndex expr1 expr2) = do
+  lval <- coerceLVal expr1
+  annotated <- checkExpr expr2 Int
+  return $ ArrId lval annotated
+coerceLVal expr = throwError $ ExpectedLValue expr
 
 -- | Get the type of a typed expression.
 getType :: Expr -> Type
@@ -409,20 +435,30 @@ newTop = do
   put $ emptyContext : ctx
 
 -- | Search the context stack for a variable or function and return its type.
--- Takes the first element that is discovered.
-lookupVar :: Ident -> Chk Type
-lookupVar id = do
+-- Takes the first element that is discovered. Indexed lvalues are properly
+-- handled.
+lookupVar :: LValue -> Chk Type
+lookupVar lval = do
+  let id = unwrapLVal lval
   stack <- get
   case stackLookup id stack of
-    Just typ -> return typ
+    Just typ -> return $ applyIndexing lval typ
     Nothing -> throwError $ UndeclaredVar id
   where
+    -- Get the identifier burried in an lvalue
+    unwrapLVal :: LValue -> Ident
+    unwrapLVal (ArrId lval _) = unwrapLVal lval
+    unwrapLVal (Id id) = id
+    -- Adapt the type of the identifier to the lvalue expressions applied to
+    -- it.
+    applyIndexing :: LValue -> Type -> Type
+    applyIndexing (ArrId lval _) (Array typ) = applyIndexing lval typ
+    applyIndexing (Id _) typ = typ
     stackLookup :: Ident -> ContextStack -> Maybe Type
     stackLookup id (ctx : stack) = case lookupContextEntry id ctx of
       Just typ -> Just typ
       Nothing -> stackLookup id stack
     stackLookup _id [] = Nothing
-    Ident name = id
 
 -- * Return State
 
@@ -478,6 +514,7 @@ data TypeError
   | NoFunctionFound
   | DuplicateFunction
   | UndeclaredVar Ident
+  | ExpectedLValue Expr
 
 instance Show TypeError where
   showsPrec _ (TypeMismatch got expected) =
@@ -513,3 +550,5 @@ instance Show TypeError where
   showsPrec _ DuplicateFunction = showString "Duplicate function identifier!"
   showsPrec _ (UndeclaredVar (Ident id)) =
     shows $ "Use of undeclared variable " <> id <> "."
+  showsPrec _ (ExpectedLValue expr) =
+    shows $ "Expected an lvalue but got expression " <> show expr <> "."

@@ -362,7 +362,11 @@ argList = listRepr (\(Argument typ val) -> typeId typ <> B.singleton ' ' <> valu
 -- offset is represented as an integer offset value preceded by a 'Type'.
 -- Offset entries are sepatated by commas.
 offsetList :: [ElemOffset] -> Builder
-offsetList = listRepr (\(Offset typ off) -> typeId typ <> B.singleton ' ' <> showInt off)
+offsetList = listRepr offsetRepr
+  where
+    offsetRepr :: ElemOffset -> Builder
+    offsetRepr (Offset typ off) = typeId typ <> B.singleton ' ' <> showInt off
+    offsetRepr (VarOffset typ off) = typeId typ <> B.singleton ' ' <> valueRepr off
 
 -- | Generate a representation of a list of predecessors of a @phi@ node. Each
 -- element is represented as a 'Value' followed by a label identifier.

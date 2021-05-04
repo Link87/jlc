@@ -76,7 +76,7 @@ data RelOp = Eq | Ne | Sgt | Sge | Slt | Sle
 data FRelOp = Oeq | One | Ogt | Oge | Olt | Ole
 
 -- | An offset in the @getelementptr@ instruction.
-data ElemOffset = Offset Type Int
+data ElemOffset = Offset Type Int | VarOffset Type Value
 
 -- | A predecessor entry in a @phi@ node.
 data PhiElem = PhiElem Value Ident

@@ -30,11 +30,11 @@ Init.      Item ::= Ident "=" Expr ;
 
 separator nonempty Item "," ;
 
-Ass.       Stmt ::= Ident "=" Expr  ";" ;
+Ass.       Stmt ::= Expr "=" Expr ";" ;
 
-Incr.      Stmt ::= Ident "++"  ";" ;
+Incr.      Stmt ::= Expr "++" ";" ;
 
-Decr.      Stmt ::= Ident "--"  ";" ;
+Decr.      Stmt ::= Expr "--" ";" ;
 
 Ret.       Stmt ::= "return" Expr ";" ;
 
@@ -46,21 +46,29 @@ CondElse.  Stmt ::= "if" "(" Expr ")" Stmt "else" Stmt  ;
 
 While.     Stmt ::= "while" "(" Expr ")" Stmt ;
 
-SExpr.      Stmt ::= Expr  ";" ;
+ForEach.   Stmt ::= "for" "(" Type Ident ":" Expr ")" Stmt ;
+
+SExpr.     Stmt ::= Expr  ";" ;
+
+-- L-Values --------------------------------------------------
+
+internal ArrId.  LValue ::= LValue "[" Expr "]" ;
+
+internal Id.     LValue ::= Ident ;
 
 -- Types ---------------------------------------------------
 
 Int.       Type ::= "int" ;
 
-Double.      Type ::= "double" ;
+Double.    Type ::= "double" ;
 
-Boolean.      Type ::= "boolean" ;
+Boolean.   Type ::= "boolean" ;
 
 Void.      Type ::= "void" ;
 
 internal   Fn. Type ::= Type "(" [Type] ")" ;
 
-internal   String. Type ::= "String" ; -- addition
+internal   String. Type ::= "String" ;
 
 Array.     Type ::= Type "[]";
 
@@ -68,23 +76,23 @@ separator  Type "," ;
 
 -- Expressions ---------------------------------------------
 
-EVar.      Expr7 ::= Ident ;
+EVar.      Expr9 ::= Ident ;
 
-ELitInt.   Expr7 ::= Integer ;
+ELitInt.   Expr9 ::= Integer ;
 
-ELitDoub.  Expr7 ::= Double;
+ELitDoub.  Expr9 ::= Double;
 
-ELitTrue.  Expr7 ::= "true" ;
+ELitTrue.  Expr9 ::= "true" ;
 
-ELitFalse. Expr7 ::= "false" ;
+ELitFalse. Expr9 ::= "false" ;
 
-EApp.      Expr7 ::= Ident "(" [Expr] ")" ;
+EApp.      Expr9 ::= Ident "(" [Expr] ")" ;
 
-EString.   Expr7 ::= String ;
+EString.   Expr9 ::= String ;
 
-ENeg.       Expr5 ::= "-" Expr6 ;
+ENeg.      Expr5 ::= "-" Expr6 ;
 
-ENot.       Expr5 ::= "!" Expr6 ;
+ENot.      Expr5 ::= "!" Expr6 ;
 
 EMul.      Expr4 ::= Expr4 MulOp Expr5 ;
 
@@ -96,17 +104,19 @@ EAnd.      Expr1 ::= Expr2 "&&" Expr1 ;
 
 EOr.       Expr ::= Expr1 "||" Expr ;
 
-coercions  Expr 7 ;
+coercions  Expr 9 ;
 
 separator  Expr "," ;
 
-internal ETyped. Expr ::= "[" Expr ":" Type "]" ; -- addition
+internal ETyped. Expr ::= "[" Expr ":" Type "]" ;
 
-EArrInit.   Expr6 ::= "new" Type "[" Expr "]";
+EArrAlloc.  Expr9 ::= "new" Type "[" Expr "]" ; -- update for multi-dimensional stuff
 
-EArrIndex.   Expr6 ::= Ident "[" Expr "]";
+EArrIndex. Expr8 ::= Expr8 "[" Expr "]" ;
 
-EArrLen.   Expr6 ::= Expr "." "length";
+EArrLen.   Expr6 ::= Expr6 "." "length" ;
+
+internal ELValue. Expr ::= LValue ;
 
 -- operators -----------------------------------------------
 
