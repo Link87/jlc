@@ -9,6 +9,7 @@ module Javalette.Gen.LLVM.Instruction
     Value (..),
     Param (..),
     Arg (..),
+    FnOpt (..),
     RelOp (..),
     FRelOp (..),
     ElemOffset (..),
@@ -68,6 +69,9 @@ data Param = Parameter Type Ident
 -- | An argument in a function call.
 data Arg = Argument Type Value
 
+-- | Function definition options
+data FnOpt = Internal | FastCC
+
 -- | Relational operators of the @icmp@ instruction. We only support signed
 -- variants of the operators.
 data RelOp = Eq | Ne | Sgt | Sge | Slt | Sle
@@ -86,8 +90,10 @@ data PhiElem = PhiElem Value Ident
 data Instruction
   = -- | Function declaration: @declare \<ty\> \@\<name\>(\<params\>)@
     FnDecl Type Ident [Type]
-  | -- | Function definition: @define \<ty\> \@\<name\>(\<params\>) {@
+  | -- | Function definition: @define internal \<ty\> \@\<name\>(\<params\>) {@
     FnDef Type Ident [Param]
+  | -- | Function definition with non-default attributes: @define <opts> \<ty\> \@\<name\>(\<params\>) {@
+    FnDefExt [FnOpt] Type Ident [Param]
   | -- | End of Function definition: @}@
     EndFnDef
   | -- | Label definition: @\<label\>:@

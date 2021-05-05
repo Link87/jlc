@@ -85,7 +85,7 @@ compile prog = do
   emitGlob $ L.FnDecl L.Void "printString" [L.Ptr $ L.Int 8]
   emitGlob $ L.FnDecl (L.Int 32) "readInt" []
   emitGlob $ L.FnDecl L.Double "readDouble" []
-  emitGlob $ L.FnDecl (L.Ptr $ L.Int 8) "calloc" [L.Int 32, L.Int 32]
+  emitGlob $ L.FnDecl (L.Ptr $ L.Int 8) "_calloc" [L.Int 32, L.Int 32]
   emitGlob L.Blank
   compileProg prog
 
@@ -101,7 +101,9 @@ compileFn :: TopDef -> Gen ()
 compileFn (FnDef typ jlId params (Block blk)) = do
   llvmParams <- generateFnParamList params
   emit L.Blank
-  emit $ L.FnDef (toLLVMType typ) (toLLVMIdent jlId) llvmParams
+  if jlId == Ident "main"
+    then emit $ L.FnDefExt [] (toLLVMType typ) (toLLVMIdent jlId) llvmParams
+    else emit $ L.FnDef (toLLVMType typ) (toLLVMIdent jlId) llvmParams
   labelInstr "entry"
   compileFnArgVars params llvmParams
   newVarTop
@@ -425,7 +427,7 @@ compileSizeItem (SizeSpec expr) typ = do
   llvmId <- newVarName
   emit $ L.GetElementPtr llvmNullId llvmType L.NullPtr [L.Offset (L.Int 32) 1]
   emit $ L.PtrToInt llvmLenId (L.Ptr llvmType) (L.Loc llvmNullId) (L.Int 32)
-  emit $ L.Call llvmMemId (L.Ptr $ L.Int 8) "calloc" [L.Argument (L.Int 32) len, L.Argument (L.Int 32) (L.Loc llvmLenId)]
+  emit $ L.Call llvmMemId (L.Ptr $ L.Int 8) "_calloc" [L.Argument (L.Int 32) len, L.Argument (L.Int 32) (L.Loc llvmLenId)]
   emit $ L.Bitcast llvmMemExtId (L.Ptr $ L.Int 8) (L.Loc llvmMemId) (L.Ptr llvmType)
   emit $ L.InsertValue llvmLenEntryId llvmArrType (L.CConst [(L.Int 32, L.Undef), (L.Ptr llvmType, L.Undef)]) (L.Int 32) len [0]
   emit $ L.InsertValue llvmId llvmArrType (L.Loc llvmLenEntryId) (L.Ptr llvmType) (L.Loc llvmMemExtId) [1]
@@ -597,7 +599,7 @@ newGlobVarName = do
   env <- get
   let num = nextGlobVar env
   put env {nextGlobVar = num + 1}
-  let llvmGlobId = L.Ident $ "g" <> T.pack (show num)
+  let llvmGlobId = L.Ident $ "_g" <> T.pack (show num)
   return llvmGlobId
 
 -- | Generate a new unique label name.

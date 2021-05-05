@@ -33,6 +33,16 @@ generateInstructionCode (FnDecl typ id args) =
     <> B.singleton ')'
 generateInstructionCode (FnDef typ id args) =
   "define "
+    <> optsRepr [Internal]
+    <> typeId typ
+    <> B.singleton ' '
+    <> llvmGlobIdent id
+    <> B.singleton '('
+    <> paramList args
+    <> ") {"
+generateInstructionCode (FnDefExt opts typ id args) =
+  "define "
+    <> optsRepr opts
     <> typeId typ
     <> B.singleton ' '
     <> llvmGlobIdent id
@@ -327,6 +337,17 @@ typeId (Array size typ) =
     <> B.singleton ']'
 typeId (Struct elems) = B.singleton '{' <> typeList elems <> B.singleton '}'
 typeId Void = "void"
+
+-- | Generate a representation of a list of 'FnOpt's, separated and followed
+-- by a whitespace.
+optsRepr :: [FnOpt] -> Builder
+optsRepr [] = ""
+optsRepr (opt : opts) = optRepr opt <> B.singleton ' ' <> optsRepr opts
+
+-- | Generate a representation of a 'FnOpt'.
+optRepr :: FnOpt -> Builder
+optRepr Internal = "internal"
+optRepr FastCC = "fastcc"
 
 -- | Generate a comma separated list of elements, where each element is
 -- formatted using a format function.
