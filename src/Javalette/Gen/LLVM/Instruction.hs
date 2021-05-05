@@ -1,4 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE Trustworthy #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
 module Javalette.Gen.LLVM.Instruction

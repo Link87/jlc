@@ -1,5 +1,6 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE Trustworthy #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
 module Javalette.Gen.LLVM
@@ -139,7 +140,7 @@ compileStmt (BStmt (Block stmts)) = do
   compileStmts stmts
   discardVarTop
 compileStmt (Decl typ items) = do
-  compileItems items typ
+  compileDeclItems items typ
 compileStmt (Ass (ETyped (ELValue lval) typ) expr) = do
   val <- compileExpr expr
   llvmId <- lookupLVal lval typ
@@ -232,18 +233,18 @@ compileStmt (ForEach typ jlId expr stmt) = do
 compileStmt (SExpr expr) = void $ compileExpr expr
 
 -- | Compile items of a variable declaration into a list of instructions.
-compileItems :: [Item] -> Type -> Gen ()
-compileItems [] _ = return ()
-compileItems (item : items) typ =
+compileDeclItems :: [DeclItem] -> Type -> Gen ()
+compileDeclItems [] _ = return ()
+compileDeclItems (item : items) typ =
   case item of
     NoInit jlId -> do
       newVarInstr jlId typ
-      compileItems items typ
+      compileDeclItems items typ
     Init jlId expr -> do
       val <- compileExpr expr
       llvmId <- newVarInstr jlId typ
       emit $ L.Store (toLLVMType typ) val llvmId
-      compileItems items typ
+      compileDeclItems items typ
 
 -- | Compile a list of expressions into a list of instructions.
 compileExprs :: [Expr] -> Gen [L.Value]
@@ -350,26 +351,7 @@ compileExpr (ETyped (EOr expr1 expr2) Boolean) = do
   llvmId <- newVarName
   emit $ L.Phi llvmId (toLLVMType Boolean) [L.PhiElem (L.BConst True) beginLabId, L.PhiElem val2 resLabId]
   return $ L.Loc llvmId
-compileExpr (ETyped (EArrAlloc typ expr) (Array _)) = do
-  let llvmType = toLLVMType typ
-  let llvmArrType = L.Struct [L.Int 32, L.Ptr llvmType]
-  len <- compileExpr expr
-  llvmNullId <- newVarName
-  llvmLenId <- newVarName
-  llvmMemId <- newVarName
-  llvmMemExtId <- newVarName
-  llvmStructId <- newVarName
-  llvmLenEntryId <- newVarName
-  llvmId <- newVarName
-  emit $ L.GetElementPtr llvmNullId llvmType L.NullPtr [L.Offset (L.Int 32) 1]
-  emit $ L.PtrToInt llvmLenId (L.Ptr llvmType) (L.Loc llvmNullId) (L.Int 32)
-  emit $ L.Call llvmMemId (L.Ptr $ L.Int 8) "calloc" [L.Argument (L.Int 32) len, L.Argument (L.Int 32) (L.Loc llvmLenId)]
-  emit $ L.Bitcast llvmMemExtId (L.Ptr $ L.Int 8) (L.Loc llvmMemId) (L.Ptr llvmType)
-  emit $ L.Alloca llvmStructId llvmArrType
-  emit $ L.InsertValue llvmLenEntryId llvmArrType (L.CConst [(L.Int 32, L.Undef), (L.Ptr llvmType, L.Undef)]) (L.Int 32) len [0]
-  emit $ L.InsertValue llvmId llvmArrType (L.Loc llvmLenEntryId) (L.Ptr llvmType) (L.Loc llvmMemExtId) [1]
-  emit $ L.Store llvmArrType (L.Loc llvmId) llvmStructId
-  return $ L.Loc llvmId
+compileExpr (ETyped (EArrAlloc _ indices) typ) = compileIndexItems indices typ
 compileExpr (ETyped (EArrIndex expr1 expr2) typ) = do
   let llvmArrType = L.Struct [L.Int 32, L.Ptr (toLLVMType typ)]
   llvmArrVal <- compileExpr expr1
@@ -387,7 +369,67 @@ compileExpr (ETyped (EArrLen expr) Int) = do
   llvmId <- newVarName
   emit $ L.ExtractValue llvmId llvmArrType val [0]
   return $ L.Loc llvmId
-compileExpr expr = error $ "No (matching) type annotation found! " ++ show expr
+compileExpr expr = error $ "No (matching) type annotation found! Expression is: " ++ show expr
+
+-- | Compile a list of dimension size specifications for an array allocation
+-- into a list of instructions. For multiple dimensions, loops over the
+-- allocated array to allocate all sub-arrays and initialise the parent array
+-- elements with the corresponding sub-array pointers.
+compileIndexItems :: [SizeItem] -> Type -> Gen L.Value
+compileIndexItems [item] (Array typ) = compileSizeItem item typ
+compileIndexItems (item : rest) (Array typ) = do
+  arr <- compileSizeItem item typ
+  let llvmArrType = toLLVMType $ Array typ
+  topLabId <- newLabName
+  loopLabId <- newLabName
+  endLabId <- newLabName
+  llvmIndexAddrId <- newVarName
+  llvmArrLenId <- newVarName
+  llvmIndexId <- newVarName
+  llvmCmpId <- newVarName
+  llvmArrAddrId <- newVarName
+  llvmValueAddrId <- newVarName
+  llvmVarId <- newVarName
+  llvmIncrIndexId <- newVarName
+  emit $ L.Alloca llvmIndexAddrId (L.Int 32)
+  emit $ L.Store (L.Int 32) (L.IConst 0) llvmIndexAddrId
+  emit $ L.ExtractValue llvmArrLenId llvmArrType arr [0]
+  emit $ L.UncondBranch topLabId
+  labelInstr topLabId
+  emit $ L.Load llvmIndexId (L.Int 32) llvmIndexAddrId
+  emit $ L.ICompare llvmCmpId L.Slt (L.Int 32) (L.Loc llvmIndexId) (L.Loc llvmArrLenId)
+  emit $ L.Add llvmIncrIndexId (L.Int 32) (L.Loc llvmIndexId) (L.IConst 1)
+  emit $ L.Store (L.Int 32) (L.Loc llvmIncrIndexId) llvmIndexAddrId
+  emit $ L.Branch (L.Loc llvmCmpId) loopLabId endLabId
+  labelInstr loopLabId
+  subArr <- compileIndexItems rest typ
+  emit $ L.ExtractValue llvmArrAddrId llvmArrType arr [1]
+  emit $ L.GetElementPtr llvmValueAddrId (toLLVMType typ) (L.Loc llvmArrAddrId) [L.VarOffset (L.Int 32) (L.Loc llvmIndexId)]
+  emit $ L.Store (toLLVMType typ) subArr llvmValueAddrId
+  emit $ L.UncondBranch topLabId
+  labelInstr endLabId
+  return arr
+
+-- | Compile a single array dimension size specification into a list of
+-- instructions. Allocates an array of the given size and type.
+compileSizeItem :: SizeItem -> Type -> Gen L.Value
+compileSizeItem (SizeSpec expr) typ = do
+  let llvmType = toLLVMType typ
+  let llvmArrType = L.Struct [L.Int 32, L.Ptr llvmType]
+  len <- compileExpr expr
+  llvmNullId <- newVarName
+  llvmLenId <- newVarName
+  llvmMemId <- newVarName
+  llvmMemExtId <- newVarName
+  llvmLenEntryId <- newVarName
+  llvmId <- newVarName
+  emit $ L.GetElementPtr llvmNullId llvmType L.NullPtr [L.Offset (L.Int 32) 1]
+  emit $ L.PtrToInt llvmLenId (L.Ptr llvmType) (L.Loc llvmNullId) (L.Int 32)
+  emit $ L.Call llvmMemId (L.Ptr $ L.Int 8) "calloc" [L.Argument (L.Int 32) len, L.Argument (L.Int 32) (L.Loc llvmLenId)]
+  emit $ L.Bitcast llvmMemExtId (L.Ptr $ L.Int 8) (L.Loc llvmMemId) (L.Ptr llvmType)
+  emit $ L.InsertValue llvmLenEntryId llvmArrType (L.CConst [(L.Int 32, L.Undef), (L.Ptr llvmType, L.Undef)]) (L.Int 32) len [0]
+  emit $ L.InsertValue llvmId llvmArrType (L.Loc llvmLenEntryId) (L.Ptr llvmType) (L.Loc llvmMemExtId) [1]
+  return $ L.Loc llvmId
 
 -- * Shared functions for instruction generation
 

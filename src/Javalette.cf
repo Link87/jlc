@@ -22,13 +22,13 @@ Empty.     Stmt ::= ";" ;
 
 BStmt.     Stmt ::= Blk ;
 
-Decl.      Stmt ::= Type [Item] ";" ;
+Decl.      Stmt ::= Type [DeclItem] ";" ;
 
-NoInit.    Item ::= Ident ;
+NoInit.    DeclItem ::= Ident ;
 
-Init.      Item ::= Ident "=" Expr ;
+Init.      DeclItem ::= Ident "=" Expr ;
 
-separator nonempty Item "," ;
+separator nonempty DeclItem "," ;
 
 Ass.       Stmt ::= Expr "=" Expr ";" ;
 
@@ -110,7 +110,11 @@ separator  Expr "," ;
 
 internal ETyped. Expr ::= "[" Expr ":" Type "]" ;
 
-EArrAlloc.  Expr9 ::= "new" Type "[" Expr "]" ; -- update for multi-dimensional stuff
+EArrAlloc.  Expr9 ::= "new" Type [SizeItem] ;
+
+SizeSpec. SizeItem ::= "[" Expr "]" ;
+
+separator nonempty SizeItem "" ;
 
 EArrIndex. Expr8 ::= Expr8 "[" Expr "]" ;
 

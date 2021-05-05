@@ -1,3 +1,5 @@
+{-# LANGUAGE Safe #-}
+
 module Javalette.Check.Return
   ( ReturnState (NoReturn, Return),
     both,

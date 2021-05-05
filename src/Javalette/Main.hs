@@ -1,6 +1,6 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE Trustworthy #-}
 
 module Main where
 
@@ -22,7 +22,6 @@ import qualified Data.Text.IO as TIO
 import Javalette.CLI (Flag (..), parseOpts)
 import Javalette.Check.TypeCheck (check)
 import Javalette.Gen.LLVM
-import Javalette.Lang.ErrM (pattern Bad, pattern Ok)
 import Javalette.Lang.Par (myLexer, pProg)
 import Javalette.Lang.Print (printTree)
 import System.Environment (getArgs)
@@ -55,7 +54,7 @@ compile s = do
   intermediate <- asks $ elem IntermediateRepr
   llvm <- llvmFlagSet
   case pProg (myLexer s) of
-    Bad err -> do
+    Left err -> do
       if standalone
         then do
           outputErr "Syntax error:"
@@ -65,7 +64,7 @@ compile s = do
           outputErr "ERROR"
           outputErr $ T.pack err
       liftIO exitFailure
-    Ok tree -> do
+    Right tree -> do
       case check tree of
         Left err -> do
           if standalone

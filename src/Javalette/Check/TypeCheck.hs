@@ -1,6 +1,7 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE Trustworthy #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
 module Javalette.Check.TypeCheck
@@ -148,7 +149,7 @@ checkStmt (BStmt (Block stmts)) ret = do
   setReturnState state
   return (BStmt (Block annotated))
 checkStmt (Decl typ items) _ = do
-  annotated <- checkItems items typ
+  annotated <- checkDeclItems items typ
   return $ Decl typ annotated
 checkStmt (Ass expr1 expr2) _ = do
   lval <- coerceLVal expr1
@@ -240,12 +241,12 @@ checkVar lval typ = do
 
 -- | Typecheck a list of `Item`s. Returns the input augmented with type
 -- annotations if succesful or throws a `TypeError` otherwise.
-checkItems :: [Item] -> Type -> Chk [Item]
-checkItems [] typ = return []
-checkItems (item : items) typ = case item of
+checkDeclItems :: [DeclItem] -> Type -> Chk [DeclItem]
+checkDeclItems [] typ = return []
+checkDeclItems (item : items) typ = case item of
   NoInit id -> do
     extendContext (id, typ)
-    next <- checkItems items typ
+    next <- checkDeclItems items typ
     return $ item : next
   Init id expr -> do
     annotated <- inferExpr expr
@@ -253,7 +254,7 @@ checkItems (item : items) typ = case item of
     if inferred == typ
       then do
         extendContext (id, typ)
-        next <- checkItems items typ
+        next <- checkDeclItems items typ
         return $ Init id annotated : next
       else throwError $ TypeMismatch inferred typ
 
@@ -315,9 +316,9 @@ inferExpr (EAnd expr1 expr2) = do
 inferExpr (EOr expr1 expr2) = do
   (annotated1, annotated2) <- inferBin expr1 expr2 [Boolean]
   return $ ETyped (EOr annotated1 annotated2) Boolean
-inferExpr (EArrAlloc typ expr) = do
-  annotated <- checkExpr expr Int
-  return $ ETyped (EArrAlloc typ annotated) (Array typ)
+inferExpr (EArrAlloc innerType sizes) = do
+  (annotated, arrType) <- inferSizeItems sizes innerType
+  return $ ETyped (EArrAlloc innerType annotated) arrType
 inferExpr (EArrIndex expr1 expr2) = do
   annotatedArr <- inferExpr expr1
   annotatedIndex <- checkExpr expr2 Int
@@ -354,6 +355,18 @@ inferBin expr1 expr2 types = do
       annotated2 <- checkExpr expr2 inferred
       return (annotated1, annotated2)
     else throwError $ TypeMismatchOverloaded inferred types
+
+-- | Infer the type of an array allocation expression with a given base type
+-- based on the number of specified array dimensions. The base type is wrapped
+-- in 'Array' constructors corresponding to that number. Expressions specifying
+-- the size of each dimension are type checked and type annotated. Throws a
+-- 'TypeError', if a size is not 'Int'.
+inferSizeItems :: [SizeItem] -> Type -> Chk ([SizeItem], Type)
+inferSizeItems [] typ = return ([], typ)
+inferSizeItems (SizeSpec expr : rest) typ = do
+  annotated <- checkExpr expr Int
+  (items, wrappedType) <- inferSizeItems rest typ
+  return (SizeSpec annotated : items, Array wrappedType)
 
 -- * Type checking helper functions
 

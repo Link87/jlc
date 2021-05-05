@@ -1,3 +1,5 @@
+{-# LANGUAGE Safe #-}
+
 module Javalette.CLI
   ( Flag (..),
     parseOpts,
