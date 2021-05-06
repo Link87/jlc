@@ -9,6 +9,9 @@ cradle:
     - path: "./src/Javalette/Check/TypeCheck.hs"
       component: "jlc:exe:jlc"
 
+    - path: "./src/Javalette/Check/TypeError.hs"
+      component: "jlc:exe:jlc"
+
     - path: "./src/Javalette/CLI.hs"
       component: "jlc:exe:jlc"
 

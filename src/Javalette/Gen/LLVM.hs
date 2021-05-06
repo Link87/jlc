@@ -263,11 +263,11 @@ compileExpr (ETyped (ELitInt ival) Int) = return $ L.IConst (fromInteger ival)
 compileExpr (ETyped (ELitDoub dval) Double) = return $ L.DConst dval
 compileExpr (ETyped ELitTrue Boolean) = return $ L.BConst True
 compileExpr (ETyped ELitFalse Boolean) = return $ L.BConst False
-compileExpr (ETyped (EApp jlId exprs) Void) = do
+compileExpr (ETyped (ECall jlId exprs) Void) = do
   vals <- compileExprs exprs
   emit $ L.VCall (toLLVMIdent jlId) (zipArgs vals (getTypes exprs))
   return L.None
-compileExpr (ETyped (EApp jlId exprs) typ) = do
+compileExpr (ETyped (ECall jlId exprs) typ) = do
   vals <- compileExprs exprs
   llvmId <- newVarName
   emit $ L.Call llvmId (toLLVMType typ) (toLLVMIdent jlId) (zipArgs vals (getTypes exprs))
