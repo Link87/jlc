@@ -9,6 +9,7 @@ module Javalette.Gen.LLVM.Instruction
     Value (..),
     Param (..),
     Arg (..),
+    FnPtr (..),
     FnOpt (..),
     RelOp (..),
     FRelOp (..),
@@ -32,12 +33,13 @@ data Type
     Array Int Type
   | -- | An LLVM struct.
     Struct [Type]
+  | Fn Type [Type]
   | -- | The LLVM @void@ type.
     Void
 
 -- | An LLVM identifier.
 newtype Ident = Ident Text
-  deriving (IsString)
+  deriving (Eq, IsString)
 
 -- | Possible values that can be handed to LLVM instructions. Can either be
 -- constant values or local or global variables.
@@ -72,6 +74,8 @@ data Arg = Argument Type Value
 -- | Function definition options
 data FnOpt = Internal | FastCC
 
+data FnPtr = FnPtr Type Value
+
 -- | Relational operators of the @icmp@ instruction. We only support signed
 -- variants of the operators.
 data RelOp = Eq | Ne | Sgt | Sge | Slt | Sle
@@ -100,6 +104,8 @@ data Instruction
     LabelDef Ident
   | -- | String definition: @\@\<id\> = internal constant [\<len\> x i8] c"\<string\>\\00"@
     StringDef Ident Type Value
+  | -- | Class descriptor: @\@\<id\> = internal constant {\<fntype\>, ...} {\<fntype\> \<fnptr\>, ...}@
+    ClsDescr Ident [FnPtr]
   | -- | @extractvalue@ instruction: @\<result\> = extractvalue \<aggregate type\> \<val\>, \<idx\>{, <idx>}*@
     ExtractValue Ident Type Value [Int]
   | -- | @insertvalue@ instruction: @\<result\> = insertvalue \<aggregate type\> \<val\>, \<ty\> \<elt\>, \<idx\>{, <idx>}*@

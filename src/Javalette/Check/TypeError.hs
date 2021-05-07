@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE Trustworthy #-}
+{-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
 module Javalette.Check.TypeError (
     TypeResult (..),

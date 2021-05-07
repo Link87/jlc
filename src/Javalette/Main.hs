@@ -1,6 +1,7 @@
 {-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Trustworthy #-}
+{-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
 module Main where
 

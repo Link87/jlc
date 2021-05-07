@@ -1,4 +1,5 @@
 {-# LANGUAGE GeneralisedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE Trustworthy #-}
@@ -24,6 +25,7 @@ import Control.Monad.State
     evalStateT,
     gets,
   )
+import Data.List (find)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe (fromJust)
@@ -81,10 +83,10 @@ saveGlobDefs (Program (td : tds)) = do
 createTopDefEntry :: TopDef -> TypeResult (Either VarEntry ClassContext)
 createTopDefEntry (FnDef typ id args _blk) = Ok $ Left (id, Fn typ (argTypes args))
 createTopDefEntry (ClsDef id elems) = do
-  res <- createClassElemEntries elems
+  res <- createClassItemEntries elems id
   return $ Right (id, Nothing, res)
 createTopDefEntry (SubClsDef id super elems) = do
-  res <- createClassElemEntries elems
+  res <- createClassItemEntries elems id
   return $ Right (id, Just super, res)
 
 -- | Strips the identifiers of arguments in a list of arguments to convert it
@@ -94,15 +96,15 @@ argTypes [] = []
 argTypes (Argument typ _id : as) = typ : argTypes as
 
 -- | Obtain the types of declarations in a class body.
-createClassElemEntries :: [ClsElem] -> TypeResult (Map Ident Type)
-createClassElemEntries [] = return Map.empty
-createClassElemEntries ((InstVar typ id) : rest) = do
-  res <- createClassElemEntries rest
+createClassItemEntries :: [ClsItem] -> Ident -> TypeResult (Map Ident Type)
+createClassItemEntries [] _ = return Map.empty
+createClassItemEntries ((InstVar typ id) : rest) cls = do
+  res <- createClassItemEntries rest cls
   if not $ Map.member id res
     then return $ Map.insert id typ res
     else throwError $ DuplicateInstanceVar id
-createClassElemEntries ((MethDef typ id args _blk) : rest) = do
-  res <- createClassElemEntries rest
+createClassItemEntries ((MethDef typ id args _blk) : rest) cls = do
+  res <- createClassItemEntries rest cls
   if not $ Map.member id res
     then return $ Map.insert id (Fn typ (argTypes args)) res
     else throwError $ DuplicateFunction id
@@ -129,14 +131,21 @@ runChk ctx (MkChk rd) = runIdentity $ runExceptT $ evalStateT rd ctx
 checkProgram :: Prog -> Chk AnnotatedProg
 checkProgram (Program []) = return $ Program []
 checkProgram (Program (td : rest)) = do
-  checked <- checkBody td
+  checked <- checkTopDef td
   (Program other) <- checkProgram (Program rest)
-  return $ Program $ checked : other
+  case checked of
+    FnDef {} -> return $ Program $ checked : other
+    cls@ClsDef {} -> do
+      descr <- createClassDescriptor cls
+      return $ Program $ descr : other
+    cls@SubClsDef {} -> do
+      descr <- createClassDescriptor cls
+      return $ Program $ descr : other
 
 -- | Typecheck a function's or class' body. Returns the input augmented with
 -- type annotations if succesful or throws a 'TypeError' otherwise.
-checkBody :: TopDef -> Chk TopDef
-checkBody (FnDef typ id args (Block stmts)) = do
+checkTopDef :: TopDef -> Chk TopDef
+checkTopDef (FnDef typ id args (Block stmts)) = do
   newTop
   saveArgs args
   when (typ == Void) $ setReturnState Return
@@ -145,33 +154,34 @@ checkBody (FnDef typ id args (Block stmts)) = do
   resetReturnState
   discardTop
   return $ FnDef typ id args (Block annotated)
-checkBody (ClsDef id elems) = do
-  pushClassTop id
+checkTopDef (ClsDef id elems) = do
+  pushClassTop id True
   enterClass id
-  annotated <- checkClassElems elems
+  annotated <- checkClassBody elems
   discardTop
   leaveClass
   return $ ClsDef id annotated
-checkBody (SubClsDef id _ elems) = checkBody $ ClsDef id elems
+checkTopDef (SubClsDef id _ elems) = checkTopDef $ ClsDef id elems
 
 -- | Typecheck a list of declarations inside a class. Returns the input
 -- augmented with type annotations if succesful or throws a 'TypeError'
 -- otherwise.
-checkClassElems :: [ClsElem] -> Chk [ClsElem]
-checkClassElems [] = return []
-checkClassElems (elem : elems) = do
-  annotated <- checkClassElem elem
-  next <- checkClassElems elems
+checkClassBody :: [ClsItem] -> Chk [ClsItem]
+checkClassBody [] = return []
+checkClassBody (elem : elems) = do
+  annotated <- checkClassItem elem
+  next <- checkClassBody elems
   return $ annotated : next
 
 -- | Typecheck a declaration inside a class. Returns the input augmented with
 -- type annotations if succesful or throws a 'TypeError' otherwise.
-checkClassElem :: ClsElem -> Chk ClsElem
-checkClassElem var@(InstVar _ _) = return var -- nothing to do here
-checkClassElem (MethDef typ id args (Block stmts)) = do
+checkClassItem :: ClsItem -> Chk ClsItem
+checkClassItem var@(InstVar _ _) = return var -- nothing to do here
+checkClassItem (MethDef typ id args (Block stmts)) = do
   newTop
   cls <- getCurrentClassName
-  saveArgs (Argument (Object $ fromJust cls) "self" : args)
+  let self = selfArg $ fromJust cls
+  saveArgs (self : args)
   when (typ == Void) $ setReturnState Return
   annotated <- checkStmts stmts typ
   checkReturnState
@@ -511,6 +521,45 @@ isSubtype (Object cls1) (Object cls2) =
         Nothing -> return False
 isSubtype _ _ = return False
 
+selfArg :: Ident -> Arg
+selfArg cls = Argument (Object cls) "self"
+
+createClassDescriptor :: TopDef -> Chk TopDef
+createClassDescriptor (SubClsDef id _ items) = createClassDescriptor $ ClsDef id items
+createClassDescriptor (ClsDef id items) = do
+  addClassItems (ClsDescr id items [] []) id
+  where
+    addClassItems :: TopDef -> Ident -> Chk TopDef
+    addClassItems descr@(ClsDescr cls items ivars meths) cur = do
+      ctx <- get
+      case Map.lookup cur (classes ctx) of
+        Just (_, Just super, mems) -> do
+          descrSuper <- addClassItems descr super
+          case descrSuper of
+            (ClsDescr _ _ superVars superMeths) -> do
+              let (ivars, meths) = getItems (Map.toList mems) cur
+              return $ ClsDescr cls items (mergeVars superVars ivars) (mergeMeths superMeths meths)
+        Just (_, Nothing, mems) -> do
+          let (ivars, meths) = getItems (Map.toList mems) cur
+          return $ ClsDescr cls items ivars meths
+    getItems :: [(Ident, Type)] -> Ident -> ([ClsVar], [ClsMeth])
+    getItems [] _ = return []
+    getItems ((id, Fn ret args) : rest) cls =
+      let (ivars, meths) = getItems rest cls
+       in (ivars, ClsMeth cls id (Fn ret args) : meths)
+    getItems ((id, typ) : rest) cls =
+      let (ivars, meths) = getItems rest cls
+       in (ClsVar typ id : ivars, meths)
+    mergeVars :: [ClsVar] -> [ClsVar] -> [ClsVar]
+    mergeVars superVars thisVars = superVars ++ thisVars
+    mergeMeths :: [ClsMeth] -> [ClsMeth] -> [ClsMeth]
+    mergeMeths superMeths [] = superMeths
+    mergeMeths [] thisMeths = thisMeths
+    mergeMeths (superMeth@(ClsMeth super id typ) : superMeths) thisMeths =
+      case find (\(ClsMeth _ other _) -> id == other) thisMeths of
+        Just meth -> mergeMeths superMeths thisMeths
+        Nothing -> superMeth : mergeMeths superMeths thisMeths
+
 -- * Context
 
 -- | The local context.
@@ -594,14 +643,26 @@ newTop = do
 
 -- | Push the class contexts of a class hierarchy on top of the variable context
 -- stack.
-pushClassTop :: Ident -> Chk ()
-pushClassTop id = do
+pushClassTop :: Ident -> Bool -> Chk ()
+pushClassTop id isTop = do
   ctx <- get
   case fromJust $ Map.lookup id (classes ctx) of
-    (_, Nothing, mems) -> put $ ctx {vars = mems : vars ctx}
+    (_, Nothing, mems) -> put $ ctx {vars = filterNonFns mems (not isTop) : vars ctx}
     (_, Just super, mems) -> do
-      pushClassTop super
-      put $ ctx {vars = mems : vars ctx}
+      pushClassTop super False
+      put $ ctx {vars = filterNonFns mems (not isTop) : vars ctx}
+  where
+    filterNonFns :: Map Ident Type -> Bool -> Map Ident Type
+    filterNonFns elems doit =
+      if doit
+        then
+          Map.filter
+            ( \case
+                Fn ret args -> True
+                _ -> False
+            )
+            elems
+        else elems
 
 -- | Search the context stack for a variable or function and return its type.
 -- Takes the first element that is discovered.

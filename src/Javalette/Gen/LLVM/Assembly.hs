@@ -58,6 +58,13 @@ generateInstructionCode (StringDef id typ (SConst text)) =
     <> " c\""
     <> B.fromText text
     <> "\""
+generateInstructionCode (ClsDescr id fnptrs) =
+  llvmGlobIdent id
+    <> " = internal constant "
+    <> typeId (Struct (map (\(FnPtr typ _) -> typ) fnptrs))
+    <> " {"
+    <> fnPtrList fnptrs
+    <> B.singleton '}'
 generateInstructionCode (ExtractValue id typ val indices) =
   indent
     <> llvmLocIdent id
@@ -336,6 +343,7 @@ typeId (Array size typ) =
     <> typeId typ
     <> B.singleton ']'
 typeId (Struct elems) = B.singleton '{' <> typeList elems <> B.singleton '}'
+typeId (Fn ret params) = typeId ret <> " (" <> typeList params <> B.singleton ')'
 typeId Void = "void"
 
 -- | Generate a representation of a list of 'FnOpt's, separated and followed
@@ -379,6 +387,10 @@ paramList = listRepr (\(Parameter typ id) -> typeId typ <> B.singleton ' ' <> va
 -- argument is a 'Value' preceded by a 'Type'. Arguments are sepatated by commas.
 argList :: [Arg] -> Builder
 argList = listRepr (\(Argument typ val) -> typeId typ <> B.singleton ' ' <> valueRepr val)
+
+
+fnPtrList :: [FnPtr] -> Builder
+fnPtrList = listRepr (\(FnPtr typ val) -> typeId typ <> B.singleton ' ' <> valueRepr val)
 
 -- | Generate a representation of a list of offsets of @getelementptr@. Each
 -- offset is represented as an integer offset value preceded by a 'Type'.

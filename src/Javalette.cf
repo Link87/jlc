@@ -6,9 +6,11 @@ Program.    Prog ::= [TopDef] ;
 
 FnDef.	    TopDef ::= Type Ident "(" [Arg] ")" Blk ;
 
-ClsDef.	    TopDef ::= "class" Ident "{" [ClsElem] "}" ;
+ClsDef.	    TopDef ::= "class" Ident "{" [ClsItem] "}" ;
 
-SubClsDef.  TopDef ::= "class" Ident "extends" Ident "{" [ClsElem] "}" ;
+SubClsDef.  TopDef ::= "class" Ident "extends" Ident "{" [ClsItem] "}" ;
+
+internal ClsDescr. TopDef ::= "class" Ident "{" [ClsItem] [ClsVar] [ClsMeth] "}" ;
 
 separator nonempty TopDef "" ;
 
@@ -16,11 +18,25 @@ Argument.   Arg ::= Type Ident;
 
 separator   Arg "," ;
 
-InstVar.    ClsElem ::= Type Ident ";" ;
+InstVar.    ClsItem ::= Type Ident ";" ;
 
-MethDef.    ClsElem ::= Type Ident "(" [Arg] ")" Blk ;
+MethDef.    ClsItem ::= Type Ident "(" [Arg] ")" Blk ;
 
-separator   ClsElem "" ;
+separator   ClsItem "" ;
+
+-- class descriptor ----------------------------------------
+
+internal ClsVar.    ClsVar ::= Type Ident ;
+
+internal [].        [ClsVar] ::= ;
+
+internal (:).       [ClsVar] ::= ClsVar ", " [ClsVar];
+
+internal ClsMeth.   ClsMeth ::= Ident "." Ident Type ;
+
+internal [].        [ClsMeth] ::= ;
+
+internal (:).       [ClsMeth] ::= ClsMeth ", " [ClsMeth];
 
 -- statements ----------------------------------------------
 
