@@ -34,6 +34,7 @@ data Type
   | -- | An LLVM struct.
     Struct [Type]
   | Fn Type [Type]
+  | Named Ident
   | -- | The LLVM @void@ type.
     Void
 
@@ -105,7 +106,9 @@ data Instruction
   | -- | String definition: @\@\<id\> = internal constant [\<len\> x i8] c"\<string\>\\00"@
     StringDef Ident Type Value
   | -- | Class descriptor: @\@\<id\> = internal constant {\<fntype\>, ...} {\<fntype\> \<fnptr\>, ...}@
-    ClsDescr Ident [FnPtr]
+    ClsDescr Ident Type [FnPtr]
+  | -- | Type definition: @\%\<id\> = type \<type\>@
+    TypeDef Ident Type
   | -- | @extractvalue@ instruction: @\<result\> = extractvalue \<aggregate type\> \<val\>, \<idx\>{, <idx>}*@
     ExtractValue Ident Type Value [Int]
   | -- | @insertvalue@ instruction: @\<result\> = insertvalue \<aggregate type\> \<val\>, \<ty\> \<elt\>, \<idx\>{, <idx>}*@
@@ -123,9 +126,9 @@ data Instruction
   | -- | @bitcast@ instruction: @\<result\> = bitcast \<ty\> \<value\> to \<ty2\>@
     Bitcast Ident Type Value Type
   | -- | @call@ instruction (non-void): @\<result\> = call \<ty\> \<fnname\>(\<function args\>)@
-    Call Ident Type Ident [Arg]
+    Call Ident Type Value [Arg]
   | -- | @call@ instruction (void): @call void \<fnname\>(\<function args\>)@
-    VCall Ident [Arg]
+    VCall Value [Arg]
   | -- | @ret@ instruction (non-void): @ret \<type\> \<value\>@
     Return Type Value
   | -- | @ret@ instruction (void): @ret void@

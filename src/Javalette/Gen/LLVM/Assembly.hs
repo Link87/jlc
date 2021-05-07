@@ -58,13 +58,17 @@ generateInstructionCode (StringDef id typ (SConst text)) =
     <> " c\""
     <> B.fromText text
     <> "\""
-generateInstructionCode (ClsDescr id fnptrs) =
+generateInstructionCode (ClsDescr id typ fnptrs) =
   llvmGlobIdent id
     <> " = internal constant "
-    <> typeId (Struct (map (\(FnPtr typ _) -> typ) fnptrs))
+    <> typeId typ
     <> " {"
     <> fnPtrList fnptrs
     <> B.singleton '}'
+generateInstructionCode (TypeDef id typ) =
+  typeId (Named id)
+    <> " = type "
+    <> typeId typ
 generateInstructionCode (ExtractValue id typ val indices) =
   indent
     <> llvmLocIdent id
@@ -141,22 +145,22 @@ generateInstructionCode (Bitcast id typ1 val typ2) =
     <> valueRepr val
     <> " to "
     <> typeId typ2
-generateInstructionCode (Call id1 typ id2 args) =
+generateInstructionCode (Call id typ val args) =
   indent
-    <> llvmLocIdent id1
+    <> llvmLocIdent id
     <> " = call "
     <> typeId typ
     <> B.singleton ' '
-    <> llvmGlobIdent id2
+    <> valueRepr val
     <> B.singleton '('
     <> argList args
     <> B.singleton ')'
-generateInstructionCode (VCall id args) =
+generateInstructionCode (VCall val args) =
   indent
     <> "call "
     <> typeId Void
     <> B.singleton ' '
-    <> llvmGlobIdent id
+    <> valueRepr val
     <> B.singleton '('
     <> argList args
     <> B.singleton ')'
@@ -344,6 +348,7 @@ typeId (Array size typ) =
     <> B.singleton ']'
 typeId (Struct elems) = B.singleton '{' <> typeList elems <> B.singleton '}'
 typeId (Fn ret params) = typeId ret <> " (" <> typeList params <> B.singleton ')'
+typeId (Named id) = llvmLocIdent id
 typeId Void = "void"
 
 -- | Generate a representation of a list of 'FnOpt's, separated and followed

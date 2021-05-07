@@ -24,6 +24,7 @@ import Control.Monad.State
     StateT (StateT),
     evalStateT,
     gets,
+    modify,
   )
 import Data.List (find)
 import Data.Map (Map)
@@ -92,8 +93,7 @@ createTopDefEntry (SubClsDef id super elems) = do
 -- | Strips the identifiers of arguments in a list of arguments to convert it
 -- into a list of types.
 argTypes :: [Arg] -> [Type]
-argTypes [] = []
-argTypes (Argument typ _id : as) = typ : argTypes as
+argTypes = map (\(Argument typ _id) -> typ)
 
 -- | Obtain the types of declarations in a class body.
 createClassItemEntries :: [ClsItem] -> Ident -> TypeResult (Map Ident Type)
@@ -106,7 +106,7 @@ createClassItemEntries ((InstVar typ id) : rest) cls = do
 createClassItemEntries ((MethDef typ id args _blk) : rest) cls = do
   res <- createClassItemEntries rest cls
   if not $ Map.member id res
-    then return $ Map.insert id (Fn typ (argTypes args)) res
+    then return $ Map.insert id (Fn typ (Object cls : argTypes args)) res
     else throwError $ DuplicateFunction id
 
 -- * Type checking functions (second pass)
@@ -157,21 +157,11 @@ checkTopDef (FnDef typ id args (Block stmts)) = do
 checkTopDef (ClsDef id elems) = do
   pushClassTop id True
   enterClass id
-  annotated <- checkClassBody elems
+  annotated <- mapM checkClassItem elems
   discardTop
   leaveClass
   return $ ClsDef id annotated
 checkTopDef (SubClsDef id _ elems) = checkTopDef $ ClsDef id elems
-
--- | Typecheck a list of declarations inside a class. Returns the input
--- augmented with type annotations if succesful or throws a 'TypeError'
--- otherwise.
-checkClassBody :: [ClsItem] -> Chk [ClsItem]
-checkClassBody [] = return []
-checkClassBody (elem : elems) = do
-  annotated <- checkClassItem elem
-  next <- checkClassBody elems
-  return $ annotated : next
 
 -- | Typecheck a declaration inside a class. Returns the input augmented with
 -- type annotations if succesful or throws a 'TypeError' otherwise.
@@ -186,18 +176,12 @@ checkClassItem (MethDef typ id args (Block stmts)) = do
   annotated <- checkStmts stmts typ
   checkReturnState
   discardTop
-  return $ MethDef typ id args (Block annotated)
+  return $ MethDef typ id (self : args) (Block annotated)
 
 -- | Typecheck a list of statements. Returns the input augmented with type
 -- annotations if succesful or throws a 'TypeError' otherwise.
 checkStmts :: [Stmt] -> Type -> Chk [Stmt]
-checkStmts stmts ret = case stmts of
-  [] -> return []
-  stmt : rest -> do
-    -- traceM $ show stmt
-    annotated <- checkStmt stmt ret
-    next <- checkStmts rest ret
-    return $ annotated : next
+checkStmts stmts ret = mapM (`checkStmt` ret) stmts
 
 -- | Typecheck a single statement. Returns the input augmented with type
 -- annotations if succesful or throws a 'TypeError' otherwise.
@@ -323,9 +307,13 @@ checkDeclItems (item : items) typ = case item of
       else throwError $ TypeMismatch inferred typ
 
 -- | Typecheck the arguments of a function call. Returns the input augmented
--- with type annotations if succesful or throws a 'TypeError' otherwise.
-checkFnArgs :: [Expr] -> Type -> Chk [Expr]
-checkFnArgs exprs fntype@(Fn ret types) = case (exprs, types) of
+-- with type annotations if succesful or throws a 'TypeError' otherwise. If
+-- 'True' is specified, the function is treated as a method and the first
+-- parameter is ignored, i.e. the first argument is checked against the second
+-- parameter.
+checkFnArgs :: [Expr] -> Type -> Bool -> Chk [Expr]
+checkFnArgs exprs (Fn ret (typ : types)) True = checkFnArgs exprs (Fn ret types) False
+checkFnArgs exprs fntype@(Fn ret types) False = case (exprs, types) of
   ([], []) -> return []
   (expr : exprs, typ : types) -> do
     annotated <- inferExpr expr
@@ -333,11 +321,11 @@ checkFnArgs exprs fntype@(Fn ret types) = case (exprs, types) of
     sub <- isSubtype inferred typ
     if inferred == typ || sub
       then do
-        next <- checkFnArgs exprs (Fn ret types)
+        next <- checkFnArgs exprs (Fn ret types) False
         return $ annotated : next
       else throwError $ TypeMismatch inferred typ
   (_, _) -> throwError ArgumentMismatch
-checkFnArgs _exprs typ = throwError $ ExpectedFnType typ
+checkFnArgs _exprs typ _ = throwError $ ExpectedFnType typ
 
 -- | Infer the type of an expression. Augments the expression and (if applicable)
 -- any subexpressions with type annotations. Typechecks subexpressions, which
@@ -353,7 +341,7 @@ inferExpr (ENull id) = do
   return $ ETyped (ENull id) typ
 inferExpr (ECall id exprs) = do
   typ <- lookupVar (Id id)
-  annotated <- checkFnArgs exprs typ
+  annotated <- checkFnArgs exprs typ False
   -- only type with return type of function, not with function type itself
   case typ of
     (Fn ret _) -> return $ ETyped (ECall id annotated) ret
@@ -417,7 +405,7 @@ inferExpr (EMethCall expr id exprs) = do
   case annotatedObj of
     ETyped _ (Object cls) -> do
       typ <- lookupMethodName id cls
-      annotatedArgs <- checkFnArgs exprs typ
+      annotatedArgs <- checkFnArgs exprs typ True
       -- only type with return type of function, not with function type itself
       case typ of
         (Fn ret _) -> return $ ETyped (EMethCall annotatedObj id annotatedArgs) ret
@@ -496,11 +484,11 @@ coerceLVal expr = throwError $ ExpectedLValue expr
 
 -- | Save the function arguments in the variable context stack top layer.
 saveArgs :: [Arg] -> Chk ()
+saveArgs [] = return ()
 saveArgs (arg : args) = case arg of
   Argument typ id -> do
     extendContext (id, typ)
     saveArgs args
-saveArgs [] = return ()
 
 -- | Get the type of a typed expression.
 getType :: Expr -> Type
@@ -549,7 +537,7 @@ createClassDescriptor (ClsDef id items) = do
        in (ivars, ClsMeth cls id (Fn ret args) : meths)
     getItems ((id, typ) : rest) cls =
       let (ivars, meths) = getItems rest cls
-       in (ClsVar typ id : ivars, meths)
+       in (ClsVar cls typ id : ivars, meths)
     mergeVars :: [ClsVar] -> [ClsVar] -> [ClsVar]
     mergeVars superVars thisVars = superVars ++ thisVars
     mergeMeths :: [ClsMeth] -> [ClsMeth] -> [ClsMeth]
@@ -631,15 +619,11 @@ extendContext (id, typ) = do
 
 -- | Discard the top context of the context stack.
 discardTop :: Chk ()
-discardTop = do
-  ctx <- get
-  put $ ctx {vars = tail $ vars ctx}
+discardTop = modify (\ctx -> ctx {vars = tail $ vars ctx})
 
 -- | Add an empty context on top of the context stack.
 newTop :: Chk ()
-newTop = do
-  ctx <- get
-  put $ ctx {vars = Map.empty : vars ctx}
+newTop = modify (\ctx -> ctx {vars = Map.empty : vars ctx})
 
 -- | Push the class contexts of a class hierarchy on top of the variable context
 -- stack.
@@ -706,15 +690,11 @@ memberClassEntry id ctx = Map.member id (classes ctx)
 
 -- | Set the current class name.
 enterClass :: Ident -> Chk ()
-enterClass id = do
-  ctx <- get
-  put $ ctx {curClass = Just id}
+enterClass id = modify (\ctx -> ctx {curClass = Just id})
 
 -- | Clear the current class name.
 leaveClass :: Chk ()
-leaveClass = do
-  ctx <- get
-  put $ ctx {curClass = Nothing}
+leaveClass = modify (\ctx -> ctx {curClass = Nothing})
 
 -- | Get the name of the class the current code is written in.
 getCurrentClassName :: Chk (Maybe Ident)
@@ -772,19 +752,13 @@ getReturnState = gets returnState
 -- | Set the current 'ReturnState' in the context. Uses '(<>)' to merge the
 -- present return state with the new one.
 setReturnState :: ReturnState -> Chk ()
-setReturnState state = do
-  ctx <- get
-  put $ ctx {returnState = returnState ctx <> state}
+setReturnState state = modify (\ctx -> ctx {returnState = returnState ctx <> state})
 
 -- | Set the current 'ReturnState' in the context. Overrides the present return
 -- state.
 overrideReturnState :: ReturnState -> Chk ()
-overrideReturnState state = do
-  ctx <- get
-  put $ ctx {returnState = state}
+overrideReturnState state = modify (\ctx -> ctx {returnState = state})
 
 -- | Reset the current 'ReturnState' in the context to 'NoReturn'.
 resetReturnState :: Chk ()
-resetReturnState = do
-  ctx <- get
-  put $ ctx {returnState = NoReturn}
+resetReturnState = modify (\ctx -> ctx {returnState = NoReturn})
