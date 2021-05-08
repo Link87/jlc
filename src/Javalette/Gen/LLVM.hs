@@ -22,6 +22,7 @@ import Control.Monad.Writer
     WriterT (WriterT),
     execWriterT,
   )
+import Data.Foldable (asum)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe (fromJust)
@@ -99,7 +100,7 @@ compileClassDescrs (Program (ClsDescr jlId _ ivars meths : rest)) = do
   llvmClsTypeId <- getClsTypeName jlId
   llvmClsDescrTypeId <- getClsDescrTypeName jlId
   llvmDescrId <- getClsDescrName jlId
-  llvmVarTypes <- registerClsVars ivars 0
+  llvmVarTypes <- registerClsVars ivars 1
   fnPtrs <- registerClsMeths meths jlId 0
   emitGlob $ L.TypeDef llvmClsTypeId (L.Struct $ L.Ptr (L.Int 8) : llvmVarTypes)
   let llvmClsDescrType = L.Struct (map (\(L.FnPtr typ _) -> typ) fnPtrs)
@@ -131,7 +132,9 @@ compileTopDef :: TopDef -> Gen ()
 compileTopDef (FnDef typ jlId params (Block stmts)) = do
   compileFn typ (toLLVMIdent jlId) params stmts
 compileTopDef (ClsDescr jlId items _ _) = do
+  enterCls jlId
   compileClsMeths items jlId
+  leaveCls
 
 compileClsMeths :: [ClsItem] -> Ident -> Gen ()
 compileClsMeths [] _ = return ()
@@ -175,10 +178,7 @@ compileFn typ id params stmts = do
 
 -- | Compile a list of statements into a list of instructions.
 compileStmts :: [Stmt] -> Gen ()
-compileStmts [] = return ()
-compileStmts (stmt : stmts) = do
-  compileStmt stmt
-  compileStmts stmts
+compileStmts = mapM_ compileStmt
 
 -- | Compile a function definition into a list of instructions.
 compileStmt :: Stmt -> Gen ()
@@ -304,11 +304,7 @@ compileDeclItems (item : items) typ =
 
 -- | Compile a list of expressions into a list of instructions.
 compileExprs :: [Expr] -> Gen [L.Value]
-compileExprs [] = return []
-compileExprs (expr : exprs) = do
-  val <- compileExpr expr
-  vals <- compileExprs exprs
-  return $ val : vals
+compileExprs = mapM compileExpr
 
 -- | Compile an expression into a list of instructions.
 compileExpr :: Expr -> Gen L.Value
@@ -369,41 +365,45 @@ compileExpr (ETyped (ENot expr) Boolean) = do
   emit $ L.XOr llvmId llvmBooleanType val (L.BConst True)
   return $ L.Loc llvmId
 compileExpr (ETyped (EMul expr1 op expr2) typ) = do
-  llvmIntType <- toLLVMType Int
-  llvmDoubleType <- toLLVMType Double
+  llvmType <- toLLVMType typ
   val1 <- compileExpr expr1
   val2 <- compileExpr expr2
   llvmId <- newVarName
   case (typ, op) of
-    (Int, Times) -> emit $ L.Mul llvmId llvmIntType val1 val2
-    (Int, Div) -> emit $ L.SDiv llvmId llvmIntType val1 val2
-    (Int, Mod) -> emit $ L.SRem llvmId llvmIntType val1 val2
-    (Double, Times) -> emit $ L.FMul llvmId llvmDoubleType val1 val2
-    (Double, Div) -> emit $ L.FDiv llvmId llvmDoubleType val1 val2
+    (Int, Times) -> emit $ L.Mul llvmId llvmType val1 val2
+    (Int, Div) -> emit $ L.SDiv llvmId llvmType val1 val2
+    (Int, Mod) -> emit $ L.SRem llvmId llvmType val1 val2
+    (Double, Times) -> emit $ L.FMul llvmId llvmType val1 val2
+    (Double, Div) -> emit $ L.FDiv llvmId llvmType val1 val2
   return $ L.Loc llvmId
 compileExpr (ETyped (EAdd expr1 op expr2) typ) = do
-  llvmIntType <- toLLVMType Int
-  llvmDoubleType <- toLLVMType Double
+  llvmType <- toLLVMType typ
   val1 <- compileExpr expr1
   val2 <- compileExpr expr2
   llvmId <- newVarName
   case (typ, op) of
-    (Int, Plus) -> emit $ L.Add llvmId llvmIntType val1 val2
-    (Int, Minus) -> emit $ L.Sub llvmId llvmIntType val1 val2
-    (Double, Plus) -> emit $ L.FAdd llvmId llvmDoubleType val1 val2
-    (Double, Minus) -> emit $ L.FSub llvmId llvmDoubleType val1 val2
+    (Int, Plus) -> emit $ L.Add llvmId llvmType val1 val2
+    (Int, Minus) -> emit $ L.Sub llvmId llvmType val1 val2
+    (Double, Plus) -> emit $ L.FAdd llvmId llvmType val1 val2
+    (Double, Minus) -> emit $ L.FSub llvmId llvmType val1 val2
   return $ L.Loc llvmId
-compileExpr (ETyped (ERel expr1@(ETyped _ typ) op expr2) Boolean) = do
-  llvmIntType <- toLLVMType Int
-  llvmBooleanType <- toLLVMType Boolean
-  llvmDoubleType <- toLLVMType Double
+compileExpr (ETyped (ERel expr1@(ETyped _ typ1) op expr2@(ETyped _ typ2)) Boolean) = do
+  let llvmRelOp = toLLVMRelOp op
+  llvmType <- toLLVMType typ1
   val1 <- compileExpr expr1
   val2 <- compileExpr expr2
   llvmId <- newVarName
-  case typ of
-    Int -> emit $ L.ICompare llvmId (toLLVMRelOp op) llvmIntType val1 val2
-    Boolean -> emit $ L.ICompare llvmId (toLLVMRelOp op) llvmBooleanType val1 val2
-    Double -> emit $ L.FCompare llvmId (toLLVMFRelOp op) llvmDoubleType val1 val2
+  case typ1 of
+    Int -> emit $ L.ICompare llvmId llvmRelOp llvmType val1 val2
+    Boolean -> emit $ L.ICompare llvmId llvmRelOp llvmType val1 val2
+    Double -> emit $ L.FCompare llvmId (toLLVMFRelOp op) llvmType val1 val2
+    Object cls1 -> do
+      llvmObj1Id <- newVarName
+      llvmObj2Id <- newVarName
+      llvmType2 <- toLLVMType typ2
+      emit $ L.PtrToInt llvmObj1Id llvmType val1 (L.Int 32)
+      emit $ L.PtrToInt llvmObj2Id llvmType2 val2 (L.Int 32)
+      emit $ L.ICompare llvmId llvmRelOp (L.Int 32) (L.Loc llvmObj1Id) (L.Loc llvmObj2Id)
   return $ L.Loc llvmId
 compileExpr (ETyped (EAnd expr1 expr2) Boolean) = do
   llvmBooleanType <- toLLVMType Boolean
@@ -437,10 +437,9 @@ compileExpr (ETyped (EOr expr1 expr2) Boolean) = do
   return $ L.Loc llvmId
 compileExpr (ETyped (EObjInit jlId) typ@(Object cls)) = do
   llvmClsDescrId <- getClsDescrName cls
-  llvmClsTypeId <- getClsTypeName cls
   llvmClsDescrTypeId <- getClsDescrTypeName cls
   llvmRefType <- toLLVMType typ
-  let llvmClsType = L.Named llvmClsTypeId
+  llvmClsType <- L.Named <$> getClsTypeName cls
   llvmNullId <- newVarName
   llvmLenId <- newVarName
   llvmMemId <- newVarName
@@ -575,7 +574,10 @@ newVarInstr jlId typ = do
 loadVarInstr :: Ident -> Type -> Gen L.Value
 loadVarInstr jlId typ = do
   llvmType <- toLLVMType typ
-  llvmId <- lookupVar jlId
+  res <- lookupVar jlId
+  llvmId <- case res of
+    Just llvmId -> return llvmId
+    Nothing -> instVarInstr jlId typ
   tempId <- newVarName
   emit $ L.Load tempId llvmType llvmId
   return $ L.Loc tempId
@@ -595,7 +597,11 @@ lookupLVal (ArrId lval expr) typ = do
   emit $ L.ExtractValue llvmArrAddrId llvmArrType (L.Loc llvmArrId) [1]
   emit $ L.GetElementPtr llvmId llvmType (L.Loc llvmArrAddrId) [L.VarOffset (L.Int 32) val]
   return llvmId
-lookupLVal (Id jlId) _ = lookupVar jlId
+lookupLVal (Id jlId) typ = do
+  res <- lookupVar jlId
+  case res of
+    Just llvmId -> return llvmId
+    Nothing -> instVarInstr jlId typ
 
 -- | Emit a label instruction and update the currently set label. Don't emit
 -- 'L.LabelDef's manually.
@@ -604,15 +610,31 @@ labelInstr llvmLabId = do
   setCurrentLabel llvmLabId
   emit $ L.LabelDef llvmLabId
 
+instVarInstr :: Ident -> Type -> Gen L.Ident
+instVarInstr jlId typ = do
+  curClsId <- fromJust <$> getCurrentClass
+  llvmClsType <- L.Named <$> getClsTypeName curClsId
+  llvmType <- toLLVMType typ
+  varInd <- getClsVar curClsId jlId
+  llvmSelfId <- fromJust <$> lookupVar "self"
+  llvmVarAddrId <- newVarName
+  llvmId <- newVarName
+  emit $ L.Load llvmVarAddrId (L.Ptr llvmClsType) llvmSelfId
+  emit $ L.GetElementPtr llvmId llvmClsType (L.Loc llvmVarAddrId) [L.Offset (L.Int 32) 0, L.VarOffset (L.Int 32) (L.IConst varInd)]
+  return llvmId
+
 polymorphicCastInstr :: Type -> Type -> L.Value -> Gen L.Value
 polymorphicCastInstr from into val =
   case (from, into) of
-    (Object _, Object _) -> do
-      llvmFromType <- toLLVMType from
-      llvmIntoType <- toLLVMType into
-      llvmId <- newVarName
-      emit $ L.Bitcast llvmId llvmFromType val llvmIntoType
-      return $ L.Loc llvmId
+    (Object cls1, Object cls2) ->
+      if cls1 /= cls2
+        then do
+          llvmFromType <- toLLVMType from
+          llvmIntoType <- toLLVMType into
+          llvmId <- newVarName
+          emit $ L.Bitcast llvmId llvmFromType val llvmIntoType
+          return $ L.Loc llvmId
+        else return val
     _ -> return val
 
 -- * Conversion functions
@@ -634,10 +656,6 @@ toLLVMType (Fn ret params) = do
 toLLVMType (Object jlId) = do
   llvmId <- getClsTypeName jlId
   return $ L.Ptr $ L.Named llvmId
-
--- clsVars <- getClsVars jlId
--- llvmVars <- mapM (toLLVMType . fst) clsVars
--- return $ L.Ptr $ L.Struct llvmVars
 
 -- | Convert a relational operator from the AST into an LLVM relational
 -- operator.
@@ -685,21 +703,16 @@ unwrapLVal (Id id) = id
 -- | Zip a list of 'L.Value's and a list of 'Type's together to create a list of
 -- LLVM function arguments.
 zipArgs :: [L.Value] -> [Type] -> Gen [L.Arg]
-zipArgs [] [] = return []
-zipArgs (val : vals) (typ : types) = do
-  llvmType <- toLLVMType typ
-  args <- zipArgs vals types
-  return $ L.Argument llvmType val : args
+zipArgs args types = do
+  llvmTypes <- mapM toLLVMType types
+  return $ zipWith L.Argument llvmTypes args
 
 -- * Environment handling
 
 -- | An environment to save data used during compilation.
 data Env = Env
   { vars :: [Map Ident L.Ident],
-    -- clsDescrs :: Map Ident L.Ident, -- ^ Map class name to class descriptor
-
     -- | Map method (and class) name to index in class descriptor
-    -- clsTypes :: Map Ident L.Ident, -- ^ Map class name to type name
     clsMeths :: Map (Ident, Ident) (Int, Type, Ident),
     -- | Map variable (and class) name to index in type
     clsVarInds :: Map (Ident, Ident) Int,
@@ -707,7 +720,8 @@ data Env = Env
     nextGlobVar :: Int,
     nextStrConst :: Int,
     nextLabel :: Int,
-    curLabel :: L.Ident
+    curLabel :: L.Ident,
+    curCls :: Maybe Ident
   }
 
 -- | Create an empty environment.
@@ -722,7 +736,8 @@ emptyEnv =
       nextGlobVar = 0,
       nextStrConst = 0,
       nextLabel = 0,
-      curLabel = ""
+      curLabel = "",
+      curCls = Nothing
     }
 
 -- | Add an empty entry on top of the variable stack.
@@ -731,11 +746,7 @@ newVarTop = modify (\env -> env {vars = Map.empty : vars env})
 
 -- | Discard the top entry of the variable stack in the environment.
 discardVarTop :: Gen ()
-discardVarTop = do
-  env <- get
-  case vars env of
-    top : rest -> put env {vars = rest}
-    _ -> error "Variable stack already empty!"
+discardVarTop = modify (\env -> env {vars = tail $ vars env})
 
 -- | Register a new local variable in the environment. The variable is pushed
 -- into the top entry of the variable stack.
@@ -744,14 +755,8 @@ pushVar jlId llvmId = modify (\env -> env {vars = Map.insert jlId llvmId (head (
 
 -- | Search for a local variable in the environment's variable stack. The
 -- variable is assumed to exist, otherwise an error is thrown.
-lookupVar :: Ident -> Gen L.Ident
-lookupVar id = gets (stackLookup id . vars)
-  where
-    stackLookup :: Ident -> [Map Ident L.Ident] -> L.Ident
-    stackLookup _ [] = error "Variable not found!"
-    stackLookup jlId (map : stack) = case Map.lookup jlId map of
-      Just llvmId -> llvmId
-      Nothing -> stackLookup jlId stack
+lookupVar :: Ident -> Gen (Maybe L.Ident)
+lookupVar jlId = gets (asum . map (Map.lookup jlId) . vars)
 
 -- | Generate a new unique local variable name.
 newVarName :: Gen L.Ident
@@ -804,8 +809,14 @@ getCurrentLabel = gets curLabel
 setCurrentLabel :: L.Ident -> Gen ()
 setCurrentLabel llvmLabId = modify (\env -> env {curLabel = llvmLabId})
 
--- addClsDescr :: Ident -> L.Ident -> Gen ()
--- addClsDescr jlId llvmId = modify (\env -> env {clsDescrs = Map.insert jlId llvmId (clsDescrs env)})
+getCurrentClass :: Gen (Maybe Ident)
+getCurrentClass = gets curCls
+
+enterCls :: Ident -> Gen ()
+enterCls clsId = modify (\env -> env {curCls = Just clsId})
+
+leaveCls :: Gen ()
+leaveCls = modify (\env -> env {curCls = Nothing})
 
 addClsMeth :: Ident -> Ident -> Int -> Type -> Ident -> Gen ()
 addClsMeth clsId jlId index typ ownerId = modify (\env -> env {clsMeths = Map.insert (clsId, jlId) (index, typ, ownerId) (clsMeths env)})
@@ -813,21 +824,8 @@ addClsMeth clsId jlId index typ ownerId = modify (\env -> env {clsMeths = Map.in
 getClsMeth :: Ident -> Ident -> Gen (Int, Type, Ident)
 getClsMeth clsId jlId = gets $ fromJust . Map.lookup (clsId, jlId) . clsMeths
 
--- addClsType :: Ident -> Ident -> Gen ()
--- addClsType jlId tyId = modify (\env -> env {clsTypes = Map.insert jlId tyId (clsTypes env)})
-
 addClsVar :: Ident -> Ident -> Int -> Gen ()
 addClsVar clsId jlId index = modify (\env -> env {clsVarInds = Map.insert (clsId, jlId) index (clsVarInds env)})
 
--- getClsVars :: Ident -> Gen [(Type, Ident)]
--- getClsVars cls = do
---   ctx <- get
---   traceShowM $ clsVars ctx
---   gets $ fromJust . Map.lookup cls . clsVars . traceShow cls
-
--- addClsVars :: Ident -> (Type, Ident) -> Gen ()
--- addClsVars cls entry = do
---   ctx <- get
---   case Map.lookup cls (clsVars ctx) of
---     Just entries -> modify (\env -> env {clsVars = Map.insert cls (entry : entries) (clsVars ctx)})
---     Nothing -> modify (\env -> env {clsVars = Map.insert cls [entry] (clsVars ctx)})
+getClsVar :: Ident -> Ident -> Gen Int
+getClsVar clsId jlId = gets $ fromJust . Map.lookup (clsId, jlId) . clsVarInds
