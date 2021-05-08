@@ -100,7 +100,7 @@ compileClassDescrs (Program (ClsDescr jlId _ ivars meths : rest)) = do
   llvmClsDescrTypeId <- getClsDescrTypeName jlId
   llvmDescrId <- getClsDescrName jlId
   llvmVarTypes <- registerClsVars ivars 0
-  fnPtrs <- registerClsMeths meths 0
+  fnPtrs <- registerClsMeths meths jlId 0
   emitGlob $ L.TypeDef llvmClsTypeId (L.Struct $ L.Ptr (L.Int 8) : llvmVarTypes)
   let llvmClsDescrType = L.Struct (map (\(L.FnPtr typ _) -> typ) fnPtrs)
   emitGlob $ L.TypeDef llvmClsDescrTypeId llvmClsDescrType
@@ -114,13 +114,13 @@ compileClassDescrs (Program (ClsDescr jlId _ ivars meths : rest)) = do
       llvmType <- toLLVMType typ
       llvmTypes <- registerClsVars meths (index + 1)
       return $ llvmType : llvmTypes
-    registerClsMeths :: [ClsMeth] -> Int -> Gen [L.FnPtr]
-    registerClsMeths [] _ = return []
-    registerClsMeths (ClsMeth cls id typ : meths) index = do
+    registerClsMeths :: [ClsMeth] -> Ident -> Int -> Gen [L.FnPtr]
+    registerClsMeths [] _ _ = return []
+    registerClsMeths (ClsMeth ownerCls id typ : meths) curCls index = do
       llvmType <- toLLVMType typ
-      addClsMeth cls id index
-      fnPtrs <- registerClsMeths meths (index + 1)
-      return $ L.FnPtr (L.Ptr llvmType) (L.Glob $ toFQNIdent cls id) : fnPtrs
+      addClsMeth curCls id index typ ownerCls
+      fnPtrs <- registerClsMeths meths curCls (index + 1)
+      return $ L.FnPtr (L.Ptr llvmType) (L.Glob $ toFQNIdent ownerCls id) : fnPtrs
 
 -- | Compile an type-annotated AST into a list of instructions.
 compileProg :: AnnotatedProg -> Gen ()
@@ -461,12 +461,14 @@ compileExpr (ETyped (EMethCall expr jlId exprs) typ) = do
   llvmClsType <- toLLVMType $ Object cls
   llvmClsTypeId <- getClsTypeName cls
   llvmClsDescrTypeId <- getClsDescrTypeName cls
-  llvmMethIndex <- getClsMeth cls jlId
-  llvmFnType <- toLLVMType $ Fn typ (Object cls : getTypes exprs)
+  (llvmMethIndex, fnType, ownerCls) <- getClsMeth cls jlId
+  llvmOwnerClsType <- toLLVMType $ Object ownerCls
+  llvmFnType <- toLLVMType fnType
   llvmRetType <- toLLVMType typ
   obj <- compileExpr expr
   vals <- compileExprs exprs
   args <- zipArgs vals (getTypes exprs)
+  llvmCastObjId <- polymorphicCastInstr (Object cls) (Object ownerCls) obj
   llvmClsDescrAddrPtrId <- newVarName
   llvmClsDescrAddrId <- newVarName
   llvmClsDescrId <- newVarName
@@ -479,11 +481,11 @@ compileExpr (ETyped (EMethCall expr jlId exprs) typ) = do
   emit $ L.Load llvmMethPtrId (L.Ptr llvmFnType) llvmMethPtrAddrId
   case typ of
     Void -> do
-      emit $ L.VCall (L.Loc llvmMethPtrId) (L.Argument llvmClsType obj : args)
+      emit $ L.VCall (L.Loc llvmMethPtrId) (L.Argument llvmOwnerClsType llvmCastObjId : args)
       return L.None
     _ -> do
       llvmId <- newVarName
-      emit $ L.Call llvmId llvmRetType (L.Loc llvmMethPtrId) (L.Argument llvmClsType obj : args)
+      emit $ L.Call llvmId llvmRetType (L.Loc llvmMethPtrId) (L.Argument llvmOwnerClsType llvmCastObjId : args)
       return $ L.Loc llvmId
 compileExpr (ETyped (EArrLen expr) Int) = do
   llvmArrType <- toLLVMType $ getType expr
@@ -698,7 +700,7 @@ data Env = Env
 
     -- | Map method (and class) name to index in class descriptor
     -- clsTypes :: Map Ident L.Ident, -- ^ Map class name to type name
-    clsMethInds :: Map (Ident, Ident) Int,
+    clsMeths :: Map (Ident, Ident) (Int, Type, Ident),
     -- | Map variable (and class) name to index in type
     clsVarInds :: Map (Ident, Ident) Int,
     nextVar :: Int,
@@ -714,7 +716,7 @@ emptyEnv =
   Env
     { vars = [Map.empty],
       -- clsDescrs = Map.empty,
-      clsMethInds = Map.empty,
+      clsMeths = Map.empty,
       clsVarInds = Map.empty,
       nextVar = 0,
       nextGlobVar = 0,
@@ -805,11 +807,11 @@ setCurrentLabel llvmLabId = modify (\env -> env {curLabel = llvmLabId})
 -- addClsDescr :: Ident -> L.Ident -> Gen ()
 -- addClsDescr jlId llvmId = modify (\env -> env {clsDescrs = Map.insert jlId llvmId (clsDescrs env)})
 
-addClsMeth :: Ident -> Ident -> Int -> Gen ()
-addClsMeth clsId jlId index = modify (\env -> env {clsMethInds = Map.insert (clsId, jlId) index (clsMethInds env)})
+addClsMeth :: Ident -> Ident -> Int -> Type -> Ident -> Gen ()
+addClsMeth clsId jlId index typ ownerId = modify (\env -> env {clsMeths = Map.insert (clsId, jlId) (index, typ, ownerId) (clsMeths env)})
 
-getClsMeth :: Ident -> Ident -> Gen Int
-getClsMeth clsId jlId = gets $ fromJust . Map.lookup (clsId, jlId) . clsMethInds
+getClsMeth :: Ident -> Ident -> Gen (Int, Type, Ident)
+getClsMeth clsId jlId = gets $ fromJust . Map.lookup (clsId, jlId) . clsMeths
 
 -- addClsType :: Ident -> Ident -> Gen ()
 -- addClsType jlId tyId = modify (\env -> env {clsTypes = Map.insert jlId tyId (clsTypes env)})
