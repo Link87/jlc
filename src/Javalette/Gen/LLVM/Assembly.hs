@@ -393,7 +393,9 @@ paramList = listRepr (\(Parameter typ id) -> typeId typ <> B.singleton ' ' <> va
 argList :: [Arg] -> Builder
 argList = listRepr (\(Argument typ val) -> typeId typ <> B.singleton ' ' <> valueRepr val)
 
-
+-- | Generate a representation of a list of function pointers, i.e. @['FnPtr']@.
+-- Each function pointer has a return type followed by a list of parameter types
+-- in parentheses.
 fnPtrList :: [FnPtr] -> Builder
 fnPtrList = listRepr (\(FnPtr typ val) -> typeId typ <> B.singleton ' ' <> valueRepr val)
 

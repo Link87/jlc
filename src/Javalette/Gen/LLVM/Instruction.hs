@@ -33,8 +33,10 @@ data Type
     Array Int Type
   | -- | An LLVM struct.
     Struct [Type]
-  | Fn Type [Type]
-  | Named Ident
+  | -- | An LLVM function with a return type and argument types.
+    Fn Type [Type]
+  | -- | A declared type with a name in LLVM.
+    Named Ident
   | -- | The LLVM @void@ type.
     Void
 
@@ -72,9 +74,10 @@ data Param = Parameter Type Ident
 -- | An argument in a function call.
 data Arg = Argument Type Value
 
--- | Function definition options
+-- | Function definition options.
 data FnOpt = Internal | FastCC
 
+-- | A pointer to a function.
 data FnPtr = FnPtr Type Value
 
 -- | Relational operators of the @icmp@ instruction. We only support signed

@@ -5,6 +5,16 @@
 {-# LANGUAGE Trustworthy #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
+-- | Type check a Javalette Abstract Syntax Tree (AST) with the 'check'
+-- function. Expressions ('Expr') are type annotated by wrapping them in
+-- 'ETyped' expressions. Performs validity and return checking.
+--
+-- Converts syntax elements where the LR parser is not powerful enough. That is,
+-- lvalue expressions are converted to 'LValue's and 'ENew' (@new Expr@) and
+-- 'EDot' (@Expr . Expr@) expressions are converted to the corresponding
+-- specialised expression for classes or arrays.
+--
+-- Creates also 'ClsDescr's from class top definitions. 
 module Javalette.Check.TypeCheck
   ( TypeError (..),
     AnnotatedProg,
@@ -129,18 +139,7 @@ runChk ctx (MkChk rd) = runIdentity $ runExceptT $ evalStateT rd ctx
 -- | Typecheck the program. Main function for the second pass.
 -- Functions and classes have to be present in context.
 checkProgram :: Prog -> Chk AnnotatedProg
-checkProgram (Program []) = return $ Program []
-checkProgram (Program (td : rest)) = do
-  checked <- checkTopDef td
-  (Program other) <- checkProgram (Program rest)
-  case checked of
-    FnDef {} -> return $ Program $ checked : other
-    cls@ClsDef {} -> do
-      descr <- createClassDescriptor cls
-      return $ Program $ descr : other
-    cls@SubClsDef {} -> do
-      descr <- createClassDescriptor cls
-      return $ Program $ descr : other
+checkProgram (Program tds) = Program <$> mapM checkTopDef tds
 
 -- | Typecheck a function's or class' body. Returns the input augmented with
 -- type annotations if succesful or throws a 'TypeError' otherwise.
@@ -160,7 +159,7 @@ checkTopDef (ClsDef id elems) = do
   annotated <- mapM checkClassItem elems
   discardTop
   leaveClass
-  return $ ClsDef id annotated
+  createClassDescriptor (ClsDef id annotated)
 checkTopDef (SubClsDef id _ elems) = checkTopDef $ ClsDef id elems
 
 -- | Typecheck a declaration inside a class. Returns the input augmented with
@@ -169,8 +168,7 @@ checkClassItem :: ClsItem -> Chk ClsItem
 checkClassItem var@(InstVar _ _) = return var -- nothing to do here
 checkClassItem (MethDef typ id args (Block stmts)) = do
   newTop
-  cls <- getCurrentClassName
-  let self = selfArg $ fromJust cls
+  self <- selfArg . fromJust <$> getCurrentClassName
   saveArgs (self : args)
   when (typ == Void) $ setReturnState Return
   annotated <- checkStmts stmts typ
@@ -337,7 +335,7 @@ inferExpr expr@(ELitDoub _) = return $ ETyped expr Double
 inferExpr ELitTrue = return $ ETyped ELitTrue Boolean
 inferExpr ELitFalse = return $ ETyped ELitFalse Boolean
 inferExpr (ENull id) = do
-  typ <- lookupClassName id
+  typ <- lookupClass id
   return $ ETyped (ENull id) typ
 inferExpr (ECall id exprs) = do
   typ <- lookupVar (Id id)
@@ -346,9 +344,10 @@ inferExpr (ECall id exprs) = do
   case typ of
     (Fn ret _) -> return $ ETyped (ECall id annotated) ret
 inferExpr expr@(EString _) = return $ ETyped expr String
-inferExpr (ENew typ sizes) = case sizes of
-  [] -> inferExpr $ EObjInit typ
-  _ -> inferExpr $ EArrAlloc typ sizes
+inferExpr (ENew typ sizes) =
+  case sizes of
+    [] -> inferExpr $ EObjInit typ
+    _ -> inferExpr $ EArrAlloc typ sizes
 inferExpr (EArrIndex expr1 expr2) = do
   annotatedArr <- inferExpr expr1
   annotatedIndex <- checkExpr expr2 Int
@@ -404,7 +403,7 @@ inferExpr (EMethCall expr id exprs) = do
   annotatedObj <- inferExpr expr
   case annotatedObj of
     ETyped _ (Object cls) -> do
-      typ <- lookupMethodName id cls
+      typ <- lookupMethod id cls
       annotatedArgs <- checkFnArgs exprs typ True
       -- only type with return type of function, not with function type itself
       case typ of
@@ -509,9 +508,13 @@ isSubtype (Object cls1) (Object cls2) =
         Nothing -> return False
 isSubtype _ _ = return False
 
+-- | The @self@ argument of methods. Requires the name of the class that the
+-- method belongs to.
 selfArg :: Ident -> Arg
 selfArg cls = Argument (Object cls) "self"
 
+-- | Augment class entries in the AST with class descriptors by converting
+-- 'ClsDef' and 'SubClsDef' into 'ClsDescr'.
 createClassDescriptor :: TopDef -> Chk TopDef
 createClassDescriptor (SubClsDef id _ items) = createClassDescriptor $ ClsDef id items
 createClassDescriptor (ClsDef id items) = do
@@ -712,8 +715,8 @@ getSuperClassName id = do
 
 -- | Search the registered classes for the class name. Returns the corresponding
 -- 'Object' type if the class exists. Throws a 'TypeError' otherwise.
-lookupClassName :: Ident -> Chk Type
-lookupClassName id = do
+lookupClass :: Ident -> Chk Type
+lookupClass id = do
   ctx <- get
   if Map.member id (classes ctx)
     then return $ Object id
@@ -722,8 +725,8 @@ lookupClassName id = do
 -- | Search for a method in a class and all its super classes. Returns the
 -- corresponding function type if the method exists. Throws a 'TypeError'
 -- otherwise.
-lookupMethodName :: Ident -> Ident -> Chk Type
-lookupMethodName id cls = do
+lookupMethod :: Ident -> Ident -> Chk Type
+lookupMethod id cls = do
   ctx <- get
   case Map.lookup cls (classes ctx) of
     Just (name, super, mems) ->
@@ -731,7 +734,7 @@ lookupMethodName id cls = do
         Just typ -> return typ
         Nothing ->
           case super of
-            Just superId -> lookupMethodName id superId
+            Just superId -> lookupMethod id superId
             Nothing -> throwError $ MethodNotFound id
     Nothing -> throwError $ ClassNotFound id
 

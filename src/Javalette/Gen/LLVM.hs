@@ -1,14 +1,19 @@
 {-# LANGUAGE GeneralisedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Trustworthy #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
+-- | Compile a Javalette AST into LLVM IR.
+--
+-- In a first pass, an LLVM AST is created as a list of 'Instruction's. These
+-- instructions are converted into LLVM assembly code in the second pass.
 module Javalette.Gen.LLVM
   ( generateIR,
   )
 where
 
-import Control.Monad (void)
+import Control.Monad (liftM2, void)
 import Control.Monad.Identity (Identity (runIdentity))
 import Control.Monad.State
   ( MonadState (get, put),
@@ -80,7 +85,7 @@ emitGlob instr = tell $ Endo ((mempty, [instr]) <>)
 -- * Compilation functions
 
 -- | Compile an type-annotated AST into a list of instructions. Emits global
--- statements for runtime function declarations.
+-- statements for runtime function declarations and class descriptors.
 compile :: AnnotatedProg -> Gen ()
 compile prog = do
   emitGlob $ L.FnDecl L.Void "printInt" [L.Int 32]
@@ -90,59 +95,64 @@ compile prog = do
   emitGlob $ L.FnDecl L.Double "readDouble" []
   emitGlob $ L.FnDecl (L.Ptr $ L.Int 8) "_calloc" [L.Int 32, L.Int 32]
   emitGlob L.Blank
-  compileClassDescrs prog
+  compileClsDscs prog
   compileProg prog
 
-compileClassDescrs :: AnnotatedProg -> Gen ()
-compileClassDescrs (Program []) = return ()
-compileClassDescrs (Program (FnDef {} : rest)) = compileClassDescrs $ Program rest
-compileClassDescrs (Program (ClsDescr jlId _ ivars meths : rest)) = do
-  llvmClsTypeId <- getClsTypeName jlId
-  llvmClsDescrTypeId <- getClsDescrTypeName jlId
-  llvmDescrId <- getClsDescrName jlId
-  llvmVarTypes <- registerClsVars ivars 1
-  fnPtrs <- registerClsMeths meths jlId 0
+-- | Read class descriptor 'TopDef's and emit the corresponding LLVM types
+-- and constants into the global namespace. Registers the index of instance
+-- variables as well as the index, type, and owner class of methods with the
+-- compilation environment.
+compileClsDscs :: AnnotatedProg -> Gen ()
+compileClsDscs (Program []) = return ()
+compileClsDscs (Program (FnDef {} : rest)) = compileClsDscs $ Program rest
+compileClsDscs (Program (ClsDescr clsId _ vars meths : rest)) = do
+  llvmClsTypeId <- getClsTypeName clsId
+  llvmDscTypeId <- getDcsTypeName clsId
+  llvmDscId <- getDcsName clsId
+  llvmVarTypes <- registerClsVars vars 1
+  fnPtrs <- registerClsMeths meths clsId 0
   emitGlob $ L.TypeDef llvmClsTypeId (L.Struct $ L.Ptr (L.Int 8) : llvmVarTypes)
-  let llvmClsDescrType = L.Struct (map (\(L.FnPtr typ _) -> typ) fnPtrs)
-  emitGlob $ L.TypeDef llvmClsDescrTypeId llvmClsDescrType
-  emitGlob $ L.ClsDescr llvmDescrId (L.Named llvmClsDescrTypeId) fnPtrs
-  compileClassDescrs $ Program rest
+  let llvmDscType = L.Struct (map (\(L.FnPtr typ _) -> typ) fnPtrs)
+  emitGlob $ L.TypeDef llvmDscTypeId llvmDscType
+  emitGlob $ L.ClsDescr llvmDscId (L.Named llvmDscTypeId) fnPtrs
+  compileClsDscs $ Program rest
   where
     registerClsVars :: [ClsVar] -> Int -> Gen [L.Type]
     registerClsVars [] _ = return []
-    registerClsVars (ClsVar cls typ id : meths) index = do
-      addClsVar cls id index
+    registerClsVars (ClsVar clsId typ jlId : meths) index = do
+      addClsVar clsId jlId index
       llvmType <- toLLVMType typ
       llvmTypes <- registerClsVars meths (index + 1)
       return $ llvmType : llvmTypes
     registerClsMeths :: [ClsMeth] -> Ident -> Int -> Gen [L.FnPtr]
     registerClsMeths [] _ _ = return []
-    registerClsMeths (ClsMeth ownerCls id typ : meths) curCls index = do
+    registerClsMeths (ClsMeth ownerCls jlId typ : meths) curCls index = do
       llvmType <- toLLVMType typ
-      addClsMeth curCls id index typ ownerCls
+      addClsMeth curCls jlId index typ ownerCls
       fnPtrs <- registerClsMeths meths curCls (index + 1)
-      return $ L.FnPtr (L.Ptr llvmType) (L.Glob $ toFQNIdent ownerCls id) : fnPtrs
+      return $ L.FnPtr (L.Ptr llvmType) (L.Glob $ toFQNIdent ownerCls jlId) : fnPtrs
 
 -- | Compile an type-annotated AST into a list of instructions.
 compileProg :: AnnotatedProg -> Gen ()
 compileProg (Program tds) = mapM_ compileTopDef tds
 
--- | Compile a function or class definition into a list of instructions.
+-- | Compile a function or methods in a class definition into a list of
+-- instructions.
 compileTopDef :: TopDef -> Gen ()
 compileTopDef (FnDef typ jlId params (Block stmts)) = do
   compileFn typ (toLLVMIdent jlId) params stmts
-compileTopDef (ClsDescr jlId items _ _) = do
-  enterCls jlId
-  compileClsMeths items jlId
+compileTopDef (ClsDescr clsId items _ _) = do
+  enterCls clsId
+  mapM_
+    ( \case
+        MethDef typ id params (Block stmts) ->
+          compileFn typ (toFQNIdent clsId id) params stmts
+        _ -> return ()
+    )
+    items
   leaveCls
 
-compileClsMeths :: [ClsItem] -> Ident -> Gen ()
-compileClsMeths [] _ = return ()
-compileClsMeths (InstVar _ _ : rest) cls = compileClsMeths rest cls
-compileClsMeths (MethDef typ id params (Block stmts) : rest) cls = do
-  compileFn typ (toFQNIdent cls id) params stmts
-  compileClsMeths rest cls
-
+-- | Compile a function or method into a list of instructions.
 compileFn :: Type -> L.Ident -> [Arg] -> [Stmt] -> Gen ()
 compileFn typ id params stmts = do
   llvmType <- toLLVMType typ
@@ -161,6 +171,8 @@ compileFn typ id params stmts = do
   discardVarTop
   emit L.EndFnDef
   where
+    -- Convert a list of Javalette function arguments into a list of LLVM
+    -- function params by converting the type and generating a name.
     generateFnParamList :: [Arg] -> Gen [L.Param]
     generateFnParamList [] = return []
     generateFnParamList (Argument typ jlId : rest) = do
@@ -168,6 +180,8 @@ compileFn typ id params stmts = do
       llvmArgId <- newVarName
       args <- generateFnParamList rest
       return $ L.Parameter llvmType llvmArgId : args
+    -- Emit instructions for allocating stack space and storing the value of
+    -- function parameters.
     compileFnArgVars :: [Arg] -> [L.Param] -> Gen ()
     compileFnArgVars [] [] = return ()
     compileFnArgVars (Argument typ jlId : rest1) (L.Parameter _ llvmArgId : rest2) = do
@@ -198,18 +212,14 @@ compileStmt (Ass (ETyped (ELValue lval) typ) expr) = do
 compileStmt (Incr (ELValue lval)) = do
   llvmIntType <- toLLVMType Int
   llvmAddrId <- lookupLVal lval Int
-  llvmValId <- newVarName
-  emit $ L.Load llvmValId llvmIntType llvmAddrId
-  llvmResId <- newVarName
-  emit $ L.Add llvmResId llvmIntType (L.Loc llvmValId) (L.IConst 1)
+  llvmValId <- instr $ \id -> L.Load id llvmIntType llvmAddrId
+  llvmResId <- instr $ \id -> L.Add id llvmIntType (L.Loc llvmValId) (L.IConst 1)
   emit $ L.Store llvmIntType (L.Loc llvmResId) llvmAddrId
 compileStmt (Decr (ELValue lval)) = do
   llvmIntType <- toLLVMType Int
   llvmAddrId <- lookupLVal lval Int
-  llvmValId <- newVarName
-  emit $ L.Load llvmValId llvmIntType llvmAddrId
-  llvmResId <- newVarName
-  emit $ L.Sub llvmResId llvmIntType (L.Loc llvmValId) (L.IConst 1)
+  llvmValId <- instr $ \id -> L.Load id llvmIntType llvmAddrId
+  llvmResId <- instr $ \id -> L.Sub id llvmIntType (L.Loc llvmValId) (L.IConst 1)
   emit $ L.Store llvmIntType (L.Loc llvmResId) llvmAddrId
 compileStmt (Ret expr@(ETyped _ typ)) = do
   llvmType <- toLLVMType typ
@@ -251,35 +261,27 @@ compileStmt (While expr stmt) = do
   emit $ L.UncondBranch topLabId
   labelInstr endLabId
 compileStmt (ForEach typ jlId expr stmt) = do
-  llvmType <- toLLVMType typ -- same as toLLVMType $ Array typ
-  llvmArrType <- toLLVMType $ getType expr -- same as toLLVMType $ Array typ
+  llvmType <- toLLVMType typ
+  llvmArrType <- toLLVMType $ getType expr
   topLabId <- newLabName
+  val <- compileExpr expr
   loopLabId <- newLabName
   endLabId <- newLabName
-  val <- compileExpr expr
-  llvmVarAddrId <- newVarInstr jlId typ
-  llvmIndexAddrId <- newVarName
-  llvmArrLenId <- newVarName
-  llvmIndexId <- newVarName
-  llvmCmpId <- newVarName
-  llvmArrAddrId <- newVarName
-  llvmValueAddrId <- newVarName
-  llvmVarId <- newVarName
-  llvmIncrIndexId <- newVarName
-  emit $ L.Alloca llvmIndexAddrId (L.Int 32)
-  emit $ L.Store (L.Int 32) (L.IConst 0) llvmIndexAddrId
-  emit $ L.ExtractValue llvmArrLenId llvmArrType val [0]
+  llvmVPtrId <- newVarInstr jlId typ
+  llvmIPtrId <- instr $ \id -> L.Alloca id (L.Int 32)
+  emit $ L.Store (L.Int 32) (L.IConst 0) llvmIPtrId
+  llvmLValId <- instr $ \id -> L.ExtractValue id llvmArrType val [0]
   emit $ L.UncondBranch topLabId
   labelInstr topLabId
-  emit $ L.Load llvmIndexId (L.Int 32) llvmIndexAddrId
-  emit $ L.ICompare llvmCmpId L.Slt (L.Int 32) (L.Loc llvmIndexId) (L.Loc llvmArrLenId)
-  emit $ L.ExtractValue llvmArrAddrId llvmArrType val [1]
-  emit $ L.GetElementPtr llvmValueAddrId llvmType (L.Loc llvmArrAddrId) [L.VarOffset (L.Int 32) (L.Loc llvmIndexId)]
-  emit $ L.Load llvmVarId llvmType llvmValueAddrId
-  emit $ L.Store llvmType (L.Loc llvmVarId) llvmVarAddrId
-  emit $ L.Add llvmIncrIndexId (L.Int 32) (L.Loc llvmIndexId) (L.IConst 1)
-  emit $ L.Store (L.Int 32) (L.Loc llvmIncrIndexId) llvmIndexAddrId
-  emit $ L.Branch (L.Loc llvmCmpId) loopLabId endLabId
+  llvmIValId <- instr $ \id -> L.Load id (L.Int 32) llvmIPtrId
+  llvmCResId <- instr $ \id -> L.ICompare id L.Slt (L.Int 32) (L.Loc llvmIValId) (L.Loc llvmLValId)
+  llvmAPtrId <- instr $ \id -> L.ExtractValue id llvmArrType val [1]
+  llvmRPtrId <- instr $ \id -> L.GetElementPtr id llvmType (L.Loc llvmAPtrId) [L.VarOffset (L.Int 32) (L.Loc llvmIValId)]
+  llvmRValId <- instr $ \id -> L.Load id llvmType llvmRPtrId
+  emit $ L.Store llvmType (L.Loc llvmRValId) llvmVPtrId
+  llvmIndIncId <- instr $ \id -> L.Add id (L.Int 32) (L.Loc llvmIValId) (L.IConst 1)
+  emit $ L.Store (L.Int 32) (L.Loc llvmIndIncId) llvmIPtrId
+  emit $ L.Branch (L.Loc llvmCResId) loopLabId endLabId
   labelInstr loopLabId
   compileStmt stmt
   emit $ L.UncondBranch topLabId
@@ -322,89 +324,67 @@ compileExpr (ETyped (ECall jlId exprs) Void) = do
 compileExpr (ETyped (ECall jlId exprs) typ) = do
   llvmType <- toLLVMType typ
   vals <- compileExprs exprs
-  llvmId <- newVarName
   args <- zipArgs vals (getTypes exprs)
-  emit $ L.Call llvmId llvmType (L.Glob $ toLLVMIdent jlId) args
-  return $ L.Loc llvmId
+  L.Loc <$> instr (\id -> L.Call id llvmType (L.Glob $ toLLVMIdent jlId) args)
 compileExpr (ETyped (EString sval) String) = do
   let text = T.pack (sval ++ "\\00")
   let typ = L.Array (length sval + 1) (L.Int 8)
   llvmGlobId <- newStrName
   emitGlob $ L.StringDef llvmGlobId typ (L.SConst text)
-  llvmLocId <- newVarName
-  emit $ L.GetElementPtr llvmLocId typ (L.Glob llvmGlobId) [L.Offset (L.Int 32) 0, L.Offset (L.Int 32) 0]
-  return $ L.Loc llvmLocId
+  L.Loc <$> instr (\id -> L.GetElementPtr id typ (L.Glob llvmGlobId) [L.Offset (L.Int 32) 0, L.Offset (L.Int 32) 0])
 compileExpr (ETyped (EArrIndex expr1 expr2) typ) = do
   llvmType <- toLLVMType typ
   llvmArrType <- toLLVMType $ Array typ
   llvmArrVal <- compileExpr expr1
-  llvmIndexVal <- compileExpr expr2
-  llvmArrAddrId <- newVarName
-  llvmElemAddrId <- newVarName
-  llvmId <- newVarName
-  emit $ L.ExtractValue llvmArrAddrId llvmArrType llvmArrVal [1]
-  emit $ L.GetElementPtr llvmElemAddrId llvmType (L.Loc llvmArrAddrId) [L.VarOffset (L.Int 32) llvmIndexVal]
-  emit $ L.Load llvmId llvmType llvmElemAddrId
-  return $ L.Loc llvmId
+  llvmIndVal <- compileExpr expr2
+  llvmArrId <- instr $ \id -> L.ExtractValue id llvmArrType llvmArrVal [1]
+  llvmElmId <- instr $ \id -> L.GetElementPtr id llvmType (L.Loc llvmArrId) [L.VarOffset (L.Int 32) llvmIndVal]
+  L.Loc <$> instr (\id -> L.Load id llvmType llvmElmId)
 compileExpr (ETyped (ENeg expr) Double) = do
   llvmDoubleType <- toLLVMType Double
   val <- compileExpr expr
-  tempId <- newVarName
-  emit $ L.FMul tempId llvmDoubleType val (L.DConst (-1))
-  return $ L.Loc tempId
+  L.Loc <$> instr (\id -> L.FMul id llvmDoubleType val (L.DConst (-1)))
 compileExpr (ETyped (ENeg expr) Int) = do
   llvmIntType <- toLLVMType Int
   val <- compileExpr expr
-  tempId <- newVarName
-  emit $ L.Mul tempId llvmIntType val (L.IConst (-1))
-  return $ L.Loc tempId
+  L.Loc <$> instr (\id -> L.Mul id llvmIntType val (L.IConst (-1)))
 compileExpr (ETyped (ENot expr) Boolean) = do
   llvmBooleanType <- toLLVMType Boolean
   val <- compileExpr expr
-  llvmId <- newVarName
-  emit $ L.XOr llvmId llvmBooleanType val (L.BConst True)
-  return $ L.Loc llvmId
+  L.Loc <$> instr (\id -> L.XOr id llvmBooleanType val (L.BConst True))
 compileExpr (ETyped (EMul expr1 op expr2) typ) = do
   llvmType <- toLLVMType typ
   val1 <- compileExpr expr1
   val2 <- compileExpr expr2
-  llvmId <- newVarName
   case (typ, op) of
-    (Int, Times) -> emit $ L.Mul llvmId llvmType val1 val2
-    (Int, Div) -> emit $ L.SDiv llvmId llvmType val1 val2
-    (Int, Mod) -> emit $ L.SRem llvmId llvmType val1 val2
-    (Double, Times) -> emit $ L.FMul llvmId llvmType val1 val2
-    (Double, Div) -> emit $ L.FDiv llvmId llvmType val1 val2
-  return $ L.Loc llvmId
+    (Int, Times) -> L.Loc <$> instr (\id -> L.Mul id llvmType val1 val2)
+    (Int, Div) -> L.Loc <$> instr (\id -> L.SDiv id llvmType val1 val2)
+    (Int, Mod) -> L.Loc <$> instr (\id -> L.SRem id llvmType val1 val2)
+    (Double, Times) -> L.Loc <$> instr (\id -> L.FMul id llvmType val1 val2)
+    (Double, Div) -> L.Loc <$> instr (\id -> L.FDiv id llvmType val1 val2)
 compileExpr (ETyped (EAdd expr1 op expr2) typ) = do
   llvmType <- toLLVMType typ
   val1 <- compileExpr expr1
   val2 <- compileExpr expr2
-  llvmId <- newVarName
   case (typ, op) of
-    (Int, Plus) -> emit $ L.Add llvmId llvmType val1 val2
-    (Int, Minus) -> emit $ L.Sub llvmId llvmType val1 val2
-    (Double, Plus) -> emit $ L.FAdd llvmId llvmType val1 val2
-    (Double, Minus) -> emit $ L.FSub llvmId llvmType val1 val2
-  return $ L.Loc llvmId
+    (Int, Plus) -> L.Loc <$> instr (\id -> L.Add id llvmType val1 val2)
+    (Int, Minus) -> L.Loc <$> instr (\id -> L.Sub id llvmType val1 val2)
+    (Double, Plus) -> L.Loc <$> instr (\id -> L.FAdd id llvmType val1 val2)
+    (Double, Minus) -> L.Loc <$> instr (\id -> L.FSub id llvmType val1 val2)
 compileExpr (ETyped (ERel expr1@(ETyped _ typ1) op expr2@(ETyped _ typ2)) Boolean) = do
   let llvmRelOp = toLLVMRelOp op
   llvmType <- toLLVMType typ1
   val1 <- compileExpr expr1
   val2 <- compileExpr expr2
-  llvmId <- newVarName
   case typ1 of
-    Int -> emit $ L.ICompare llvmId llvmRelOp llvmType val1 val2
-    Boolean -> emit $ L.ICompare llvmId llvmRelOp llvmType val1 val2
-    Double -> emit $ L.FCompare llvmId (toLLVMFRelOp op) llvmType val1 val2
+    Int -> L.Loc <$> instr (\id -> L.ICompare id llvmRelOp llvmType val1 val2)
+    Boolean -> L.Loc <$> instr (\id -> L.ICompare id llvmRelOp llvmType val1 val2)
+    Double -> L.Loc <$> instr (\id -> L.FCompare id (toLLVMFRelOp op) llvmType val1 val2)
     Object cls1 -> do
-      llvmObj1Id <- newVarName
-      llvmObj2Id <- newVarName
       llvmType2 <- toLLVMType typ2
-      emit $ L.PtrToInt llvmObj1Id llvmType val1 (L.Int 32)
-      emit $ L.PtrToInt llvmObj2Id llvmType2 val2 (L.Int 32)
-      emit $ L.ICompare llvmId llvmRelOp (L.Int 32) (L.Loc llvmObj1Id) (L.Loc llvmObj2Id)
-  return $ L.Loc llvmId
+      llvmObj1Id <- instr (\id -> L.PtrToInt id llvmType val1 (L.Int 32))
+      llvmObj2Id <- instr (\id -> L.PtrToInt id llvmType2 val2 (L.Int 32))
+      L.Loc <$> instr (\id -> L.ICompare id llvmRelOp (L.Int 32) (L.Loc llvmObj1Id) (L.Loc llvmObj2Id))
 compileExpr (ETyped (EAnd expr1 expr2) Boolean) = do
   llvmBooleanType <- toLLVMType Boolean
   trueLabId <- newLabName
@@ -418,8 +398,7 @@ compileExpr (ETyped (EAnd expr1 expr2) Boolean) = do
   emit $ L.UncondBranch endLabId
   labelInstr endLabId
   llvmId <- newVarName
-  emit $ L.Phi llvmId llvmBooleanType [L.PhiElem val2 resLabId, L.PhiElem (L.BConst False) beginLabId]
-  return $ L.Loc llvmId
+  L.Loc <$> instr (\id -> L.Phi id llvmBooleanType [L.PhiElem val2 resLabId, L.PhiElem (L.BConst False) beginLabId])
 compileExpr (ETyped (EOr expr1 expr2) Boolean) = do
   llvmBooleanType <- toLLVMType Boolean
   falseLabId <- newLabName
@@ -432,66 +411,47 @@ compileExpr (ETyped (EOr expr1 expr2) Boolean) = do
   resLabId <- getCurrentLabel
   emit $ L.UncondBranch endLabId
   labelInstr endLabId
-  llvmId <- newVarName
-  emit $ L.Phi llvmId llvmBooleanType [L.PhiElem (L.BConst True) beginLabId, L.PhiElem val2 resLabId]
-  return $ L.Loc llvmId
-compileExpr (ETyped (EObjInit jlId) typ@(Object cls)) = do
-  llvmClsDescrId <- getClsDescrName cls
-  llvmClsDescrTypeId <- getClsDescrTypeName cls
+  L.Loc <$> instr (\id -> L.Phi id llvmBooleanType [L.PhiElem (L.BConst True) beginLabId, L.PhiElem val2 resLabId])
+compileExpr (ETyped (EObjInit _) typ@(Object clsId)) = do
+  llvmClsType <- L.Named <$> getClsTypeName clsId
+  llvmDscType <- L.Named <$> getDcsTypeName clsId
   llvmRefType <- toLLVMType typ
-  llvmClsType <- L.Named <$> getClsTypeName cls
-  llvmNullId <- newVarName
-  llvmLenId <- newVarName
-  llvmMemId <- newVarName
-  llvmId <- newVarName
-  llvmClsDescrDstAddrId <- newVarName
-  llvmClsDescrSrcAddrId <- newVarName
-  emit $ L.GetElementPtr llvmNullId llvmClsType L.NullPtr [L.Offset (L.Int 32) 1]
-  emit $ L.PtrToInt llvmLenId llvmRefType (L.Loc llvmNullId) (L.Int 32)
-  emit $ L.Call llvmMemId (L.Ptr $ L.Int 8) (L.Glob "_calloc") [L.Argument (L.Int 32) (L.IConst 1), L.Argument (L.Int 32) (L.Loc llvmLenId)]
-  emit $ L.Bitcast llvmId (L.Ptr $ L.Int 8) (L.Loc llvmMemId) llvmRefType
-  emit $ L.Bitcast llvmClsDescrSrcAddrId (L.Ptr $ L.Named llvmClsDescrTypeId) (L.Glob llvmClsDescrId) (L.Ptr $ L.Int 8)
-  emit $ L.GetElementPtr llvmClsDescrDstAddrId llvmClsType (L.Loc llvmId) [L.Offset (L.Int 32) 0, L.Offset (L.Int 32) 0]
-  emit $ L.Store (L.Ptr $ L.Int 8) (L.Loc llvmClsDescrSrcAddrId) llvmClsDescrDstAddrId
-  return $ L.Loc llvmId
+  llvmDscId <- getDcsName clsId
+  llvmNulId <- instr (\id -> L.GetElementPtr id llvmClsType L.NullPtr [L.Offset (L.Int 32) 1])
+  llvmLenId <- instr (\id -> L.PtrToInt id llvmRefType (L.Loc llvmNulId) (L.Int 32))
+  llvmMemId <- instr (\id -> L.Call id (L.Ptr $ L.Int 8) (L.Glob "_calloc") [L.Argument (L.Int 32) (L.IConst 1), L.Argument (L.Int 32) (L.Loc llvmLenId)])
+  llvmObjId <- instr (\id -> L.Bitcast id (L.Ptr $ L.Int 8) (L.Loc llvmMemId) llvmRefType)
+  llvmSrcId <- instr (\id -> L.Bitcast id (L.Ptr llvmDscType) (L.Glob llvmDscId) (L.Ptr $ L.Int 8))
+  llvmDstId <- instr (\id -> L.GetElementPtr id llvmClsType (L.Loc llvmObjId) [L.Offset (L.Int 32) 0, L.Offset (L.Int 32) 0])
+  emit $ L.Store (L.Ptr $ L.Int 8) (L.Loc llvmSrcId) llvmDstId
+  return $ L.Loc llvmObjId
 compileExpr (ETyped (EArrAlloc _ indices) typ) = compileIndexItems indices typ
 compileExpr (ETyped (EMethCall expr jlId exprs) typ) = do
-  let (Object cls) = getType expr
-  llvmClsType <- toLLVMType $ Object cls
-  llvmClsTypeId <- getClsTypeName cls
-  llvmClsDescrTypeId <- getClsDescrTypeName cls
-  (llvmMethIndex, fnType, ownerCls) <- getClsMeth cls jlId
-  llvmOwnerClsType <- toLLVMType $ Object ownerCls
-  llvmFnType <- toLLVMType fnType
+  let (Object clsId) = getType expr
+  llvmClsType <- L.Named <$> getClsTypeName clsId
+  llvmDscType <- L.Named <$> getDcsTypeName clsId
+  (metInd, funType, ownerCls) <- getClsMeth clsId jlId
+  llvmOwnType <- toLLVMType $ Object ownerCls
+  llvmFunType <- toLLVMType funType
   llvmRetType <- toLLVMType typ
   obj <- compileExpr expr
   vals <- compileExprs exprs
   args <- zipArgs vals (getTypes exprs)
-  llvmCastObjId <- polymorphicCastInstr (Object cls) (Object ownerCls) obj
-  llvmClsDescrAddrPtrId <- newVarName
-  llvmClsDescrAddrId <- newVarName
-  llvmClsDescrId <- newVarName
-  llvmMethPtrAddrId <- newVarName
-  llvmMethPtrId <- newVarName
-  emit $ L.GetElementPtr llvmClsDescrAddrPtrId (L.Named llvmClsTypeId) obj [L.Offset (L.Int 32) 0, L.Offset (L.Int 32) 0]
-  emit $ L.Load llvmClsDescrAddrId (L.Ptr $ L.Int 8) llvmClsDescrAddrPtrId
-  emit $ L.Bitcast llvmClsDescrId (L.Ptr $ L.Int 8) (L.Loc llvmClsDescrAddrId) (L.Ptr $ L.Named llvmClsDescrTypeId)
-  emit $ L.GetElementPtr llvmMethPtrAddrId (L.Named llvmClsDescrTypeId) (L.Loc llvmClsDescrId) [L.Offset (L.Int 32) 0, L.Offset (L.Int 32) llvmMethIndex]
-  emit $ L.Load llvmMethPtrId (L.Ptr llvmFnType) llvmMethPtrAddrId
+  llvmObjCId <- polymorphicCastInstr (Object clsId) (Object ownerCls) obj
+  llvmDscAId <- instr (\id -> L.GetElementPtr id llvmClsType obj [L.Offset (L.Int 32) 0, L.Offset (L.Int 32) 0])
+  llvmDscPId <- instr (\id -> L.Load id (L.Ptr $ L.Int 8) llvmDscAId)
+  llvmDscCId <- instr (\id -> L.Bitcast id (L.Ptr $ L.Int 8) (L.Loc llvmDscPId) (L.Ptr llvmDscType))
+  llvmMetAId <- instr (\id -> L.GetElementPtr id llvmDscType (L.Loc llvmDscCId) [L.Offset (L.Int 32) 0, L.Offset (L.Int 32) metInd])
+  llvmMetPId <- instr (\id -> L.Load id (L.Ptr llvmFunType) llvmMetAId)
   case typ of
     Void -> do
-      emit $ L.VCall (L.Loc llvmMethPtrId) (L.Argument llvmOwnerClsType llvmCastObjId : args)
+      emit $ L.VCall (L.Loc llvmMetPId) (L.Argument llvmOwnType llvmObjCId : args)
       return L.None
-    _ -> do
-      llvmId <- newVarName
-      emit $ L.Call llvmId llvmRetType (L.Loc llvmMethPtrId) (L.Argument llvmOwnerClsType llvmCastObjId : args)
-      return $ L.Loc llvmId
+    _ -> L.Loc <$> instr (\id -> L.Call id llvmRetType (L.Loc llvmMetPId) (L.Argument llvmOwnType llvmObjCId : args))
 compileExpr (ETyped (EArrLen expr) Int) = do
   llvmArrType <- toLLVMType $ getType expr
   val <- compileExpr expr
-  llvmId <- newVarName
-  emit $ L.ExtractValue llvmId llvmArrType val [0]
-  return $ L.Loc llvmId
+  L.Loc <$> instr (\id -> L.ExtractValue id llvmArrType val [0])
 compileExpr expr = error $ "No (matching) type annotation found! Expression is: " ++ show expr
 
 -- | Compile a list of dimension size specifications for an array allocation
@@ -507,29 +467,21 @@ compileIndexItems (item : rest) (Array typ) = do
   topLabId <- newLabName
   loopLabId <- newLabName
   endLabId <- newLabName
-  llvmIndexAddrId <- newVarName
-  llvmArrLenId <- newVarName
-  llvmIndexId <- newVarName
-  llvmCmpId <- newVarName
-  llvmArrAddrId <- newVarName
-  llvmValueAddrId <- newVarName
-  llvmVarId <- newVarName
-  llvmIncrIndexId <- newVarName
-  emit $ L.Alloca llvmIndexAddrId (L.Int 32)
-  emit $ L.Store (L.Int 32) (L.IConst 0) llvmIndexAddrId
-  emit $ L.ExtractValue llvmArrLenId llvmArrType arr [0]
+  llvmPtrId <- instr $ \id -> L.Alloca id (L.Int 32)
+  emit $ L.Store (L.Int 32) (L.IConst 0) llvmPtrId
+  llvmLenId <- instr $ \id -> L.ExtractValue id llvmArrType arr [0]
   emit $ L.UncondBranch topLabId
   labelInstr topLabId
-  emit $ L.Load llvmIndexId (L.Int 32) llvmIndexAddrId
-  emit $ L.ICompare llvmCmpId L.Slt (L.Int 32) (L.Loc llvmIndexId) (L.Loc llvmArrLenId)
-  emit $ L.Add llvmIncrIndexId (L.Int 32) (L.Loc llvmIndexId) (L.IConst 1)
-  emit $ L.Store (L.Int 32) (L.Loc llvmIncrIndexId) llvmIndexAddrId
+  llvmIndId <- instr $ \id -> L.Load id (L.Int 32) llvmPtrId
+  llvmCmpId <- instr $ \id -> L.ICompare id L.Slt (L.Int 32) (L.Loc llvmIndId) (L.Loc llvmLenId)
+  llvmIppId <- instr $ \id -> L.Add id (L.Int 32) (L.Loc llvmIndId) (L.IConst 1)
+  emit $ L.Store (L.Int 32) (L.Loc llvmIppId) llvmPtrId
   emit $ L.Branch (L.Loc llvmCmpId) loopLabId endLabId
   labelInstr loopLabId
   subArr <- compileIndexItems rest typ
-  emit $ L.ExtractValue llvmArrAddrId llvmArrType arr [1]
-  emit $ L.GetElementPtr llvmValueAddrId llvmType (L.Loc llvmArrAddrId) [L.VarOffset (L.Int 32) (L.Loc llvmIndexId)]
-  emit $ L.Store llvmType subArr llvmValueAddrId
+  llvmArrId <- instr $ \id -> L.ExtractValue id llvmArrType arr [1]
+  llvmValId <- instr $ \id -> L.GetElementPtr id llvmType (L.Loc llvmArrId) [L.VarOffset (L.Int 32) (L.Loc llvmIndId)]
+  emit $ L.Store llvmType subArr llvmValId
   emit $ L.UncondBranch topLabId
   labelInstr endLabId
   return arr
@@ -541,21 +493,22 @@ compileSizeItem (SizeSpec expr) typ = do
   llvmType <- toLLVMType typ
   let llvmArrType = L.Struct [L.Int 32, L.Ptr llvmType]
   len <- compileExpr expr
-  llvmNullId <- newVarName
-  llvmLenId <- newVarName
-  llvmMemId <- newVarName
-  llvmMemExtId <- newVarName
-  llvmLenEntryId <- newVarName
-  llvmId <- newVarName
-  emit $ L.GetElementPtr llvmNullId llvmType L.NullPtr [L.Offset (L.Int 32) 1]
-  emit $ L.PtrToInt llvmLenId (L.Ptr llvmType) (L.Loc llvmNullId) (L.Int 32)
-  emit $ L.Call llvmMemId (L.Ptr $ L.Int 8) (L.Glob "_calloc") [L.Argument (L.Int 32) len, L.Argument (L.Int 32) (L.Loc llvmLenId)]
-  emit $ L.Bitcast llvmMemExtId (L.Ptr $ L.Int 8) (L.Loc llvmMemId) (L.Ptr llvmType)
-  emit $ L.InsertValue llvmLenEntryId llvmArrType (L.CConst [(L.Int 32, L.Undef), (L.Ptr llvmType, L.Undef)]) (L.Int 32) len [0]
-  emit $ L.InsertValue llvmId llvmArrType (L.Loc llvmLenEntryId) (L.Ptr llvmType) (L.Loc llvmMemExtId) [1]
-  return $ L.Loc llvmId
+  llvmNulId <- instr $ \id -> L.GetElementPtr id llvmType L.NullPtr [L.Offset (L.Int 32) 1]
+  llvmLenId <- instr $ \id -> L.PtrToInt id (L.Ptr llvmType) (L.Loc llvmNulId) (L.Int 32)
+  llvmAllId <- instr $ \id -> L.Call id (L.Ptr $ L.Int 8) (L.Glob "_calloc") [L.Argument (L.Int 32) len, L.Argument (L.Int 32) (L.Loc llvmLenId)]
+  llvmMemId <- instr $ \id -> L.Bitcast id (L.Ptr $ L.Int 8) (L.Loc llvmAllId) (L.Ptr llvmType)
+  llvmArrId <- instr $ \id -> L.InsertValue id llvmArrType (L.CConst [(L.Int 32, L.Undef), (L.Ptr llvmType, L.Undef)]) (L.Int 32) len [0]
+  L.Loc <$> instr (\id -> L.InsertValue id llvmArrType (L.Loc llvmArrId) (L.Ptr llvmType) (L.Loc llvmMemId) [1])
 
 -- * Shared functions for instruction generation
+
+-- | Emit an instruction that returns a value. A new variable name is generated
+-- and returned.
+instr :: (L.Ident -> Instruction) -> Gen L.Ident
+instr cmd = do
+  llvmId <- newVarName
+  emit $ cmd llvmId
+  return llvmId
 
 -- | Emit an instruction to allocate stack space for a local variable. Returns
 -- the pointer to the allocated address. A new unique variable name for LLVM is
@@ -578,9 +531,7 @@ loadVarInstr jlId typ = do
   llvmId <- case res of
     Just llvmId -> return llvmId
     Nothing -> instVarInstr jlId typ
-  tempId <- newVarName
-  emit $ L.Load tempId llvmType llvmId
-  return $ L.Loc tempId
+  L.Loc <$> instr (\id -> L.Load id llvmType llvmId)
 
 -- | Look up the address of an lvalue. If a plain variable, the variable stack
 -- is searched as usual. If indexed, appropriate instructions are emitted.
@@ -589,14 +540,10 @@ lookupLVal (ArrId lval expr) typ = do
   llvmType <- toLLVMType typ
   llvmArrType <- toLLVMType $ Array typ
   val <- compileExpr expr
-  llvmBaseId <- lookupLVal lval (Array typ)
-  llvmArrId <- newVarName
-  llvmArrAddrId <- newVarName
-  llvmId <- newVarName
-  emit $ L.Load llvmArrId llvmArrType llvmBaseId
-  emit $ L.ExtractValue llvmArrAddrId llvmArrType (L.Loc llvmArrId) [1]
-  emit $ L.GetElementPtr llvmId llvmType (L.Loc llvmArrAddrId) [L.VarOffset (L.Int 32) val]
-  return llvmId
+  llvmVarId <- lookupLVal lval (Array typ)
+  llvmArrId <- instr $ \id -> L.Load id llvmArrType llvmVarId
+  llvmPtrId <- instr $ \id -> L.ExtractValue id llvmArrType (L.Loc llvmArrId) [1]
+  instr $ \id -> L.GetElementPtr id llvmType (L.Loc llvmPtrId) [L.VarOffset (L.Int 32) val]
 lookupLVal (Id jlId) typ = do
   res <- lookupVar jlId
   case res of
@@ -610,19 +557,22 @@ labelInstr llvmLabId = do
   setCurrentLabel llvmLabId
   emit $ L.LabelDef llvmLabId
 
+-- | Emit instructions to get the address of a class variable for a subsequent
+-- 'Load'. Uses the @self@ variable. Undefined behaviuor, if @self@ does not
+-- point to the class object.
 instVarInstr :: Ident -> Type -> Gen L.Ident
 instVarInstr jlId typ = do
-  curClsId <- fromJust <$> getCurrentClass
-  llvmClsType <- L.Named <$> getClsTypeName curClsId
+  curClsId <- fromJust <$> getCurCls
   llvmType <- toLLVMType typ
+  llvmClsType <- L.Named <$> getClsTypeName curClsId
   varInd <- getClsVar curClsId jlId
   llvmSelfId <- fromJust <$> lookupVar "self"
-  llvmVarAddrId <- newVarName
-  llvmId <- newVarName
-  emit $ L.Load llvmVarAddrId (L.Ptr llvmClsType) llvmSelfId
-  emit $ L.GetElementPtr llvmId llvmClsType (L.Loc llvmVarAddrId) [L.Offset (L.Int 32) 0, L.VarOffset (L.Int 32) (L.IConst varInd)]
-  return llvmId
+  llvmVarId <- instr $ \id -> L.Load id (L.Ptr llvmClsType) llvmSelfId
+  instr $ \id -> L.GetElementPtr id llvmClsType (L.Loc llvmVarId) [L.Offset (L.Int 32) 0, L.VarOffset (L.Int 32) (L.IConst varInd)]
 
+-- | If applicable and necessary, emit an instruction to cast an object to
+-- another class type. Undefined behaviour if both types are class types but
+-- the first type is not a subtype of the second type.
 polymorphicCastInstr :: Type -> Type -> L.Value -> Gen L.Value
 polymorphicCastInstr from into val =
   case (from, into) of
@@ -632,8 +582,7 @@ polymorphicCastInstr from into val =
           llvmFromType <- toLLVMType from
           llvmIntoType <- toLLVMType into
           llvmId <- newVarName
-          emit $ L.Bitcast llvmId llvmFromType val llvmIntoType
-          return $ L.Loc llvmId
+          L.Loc <$> instr (\id -> L.Bitcast id llvmFromType val llvmIntoType)
         else return val
     _ -> return val
 
@@ -649,13 +598,8 @@ toLLVMType String = return $ L.Ptr $ L.Int 8
 toLLVMType (Array typ) = do
   inner <- toLLVMType typ
   return $ L.Struct [L.Int 32, L.Ptr inner]
-toLLVMType (Fn ret params) = do
-  llvmRet <- toLLVMType ret
-  llvmParams <- mapM toLLVMType params
-  return $ L.Fn llvmRet llvmParams
-toLLVMType (Object jlId) = do
-  llvmId <- getClsTypeName jlId
-  return $ L.Ptr $ L.Named llvmId
+toLLVMType (Fn ret params) = liftM2 L.Fn (toLLVMType ret) (mapM toLLVMType params)
+toLLVMType (Object jlId) = L.Ptr . L.Named <$> getClsTypeName jlId
 
 -- | Convert a relational operator from the AST into an LLVM relational
 -- operator.
@@ -682,7 +626,7 @@ toLLVMIdent :: Ident -> L.Ident
 toLLVMIdent (Ident name) = L.Ident name
 
 toFQNIdent :: Ident -> Ident -> L.Ident
-toFQNIdent (Ident cls) (Ident fn) = L.Ident $ T.concat [cls, ".", fn]
+toFQNIdent (Ident name) (Ident fn) = L.Ident $ T.concat [name, ".", fn]
 
 -- * Utility functions
 
@@ -712,7 +656,8 @@ zipArgs args types = do
 -- | An environment to save data used during compilation.
 data Env = Env
   { vars :: [Map Ident L.Ident],
-    -- | Map method (and class) name to index in class descriptor
+    -- | Map method (and class) name to index in class descriptor and to type
+    -- and owner class name.
     clsMeths :: Map (Ident, Ident) (Int, Type, Ident),
     -- | Map variable (and class) name to index in type
     clsVarInds :: Map (Ident, Ident) Int,
@@ -729,7 +674,6 @@ emptyEnv :: Env
 emptyEnv =
   Env
     { vars = [Map.empty],
-      -- clsDescrs = Map.empty,
       clsMeths = Map.empty,
       clsVarInds = Map.empty,
       nextVar = 0,
@@ -790,16 +734,17 @@ newLabName = do
   put env {nextLabel = num + 1}
   return $ L.Ident $ (T.append "lab" . T.pack) (show num)
 
--- | Get the unique name of a class descriptor.
-getClsDescrName :: Ident -> Gen L.Ident
-getClsDescrName (Ident name) = return $ L.Ident $ T.append "_cd." name
-
--- | Get the unique name of a class descriptor.
+-- | Get the type name of a class.
 getClsTypeName :: Ident -> Gen L.Ident
 getClsTypeName (Ident name) = return $ L.Ident $ T.append "_ty." name
 
-getClsDescrTypeName :: Ident -> Gen L.Ident
-getClsDescrTypeName (Ident name) = return $ L.Ident $ T.append "_ty.cd." name
+-- | Get the unique name of a class descriptor.
+getDcsName :: Ident -> Gen L.Ident
+getDcsName (Ident name) = return $ L.Ident $ T.append "_cd." name
+
+-- | Get type name of a class descriptor.
+getDcsTypeName :: Ident -> Gen L.Ident
+getDcsTypeName (Ident name) = return $ L.Ident $ T.append "_ty.cd." name
 
 -- | Get the label under which instructions are currently emitted.
 getCurrentLabel :: Gen L.Ident
@@ -809,23 +754,32 @@ getCurrentLabel = gets curLabel
 setCurrentLabel :: L.Ident -> Gen ()
 setCurrentLabel llvmLabId = modify (\env -> env {curLabel = llvmLabId})
 
-getCurrentClass :: Gen (Maybe Ident)
-getCurrentClass = gets curCls
+-- | The name of the class that is currently compiled.
+getCurCls :: Gen (Maybe Ident)
+getCurCls = gets curCls
 
+-- | Set the name of the class that is curently compiled.
 enterCls :: Ident -> Gen ()
 enterCls clsId = modify (\env -> env {curCls = Just clsId})
 
+-- | Unset the name of the class that is currently compiled.
 leaveCls :: Gen ()
 leaveCls = modify (\env -> env {curCls = Nothing})
 
+-- | Add details of a method to the compilation environment. Index in class
+-- descriptor, function type and owner class name are saved.
 addClsMeth :: Ident -> Ident -> Int -> Type -> Ident -> Gen ()
 addClsMeth clsId jlId index typ ownerId = modify (\env -> env {clsMeths = Map.insert (clsId, jlId) (index, typ, ownerId) (clsMeths env)})
 
+-- | Get the details of a method from the class environment.
 getClsMeth :: Ident -> Ident -> Gen (Int, Type, Ident)
 getClsMeth clsId jlId = gets $ fromJust . Map.lookup (clsId, jlId) . clsMeths
 
+-- | Add the details of an instance variable to the compilation environment.
+-- The index in the LLVM class struct is saved.
 addClsVar :: Ident -> Ident -> Int -> Gen ()
 addClsVar clsId jlId index = modify (\env -> env {clsVarInds = Map.insert (clsId, jlId) index (clsVarInds env)})
 
+-- | Get the details of an instance variable from the compilation environment.
 getClsVar :: Ident -> Ident -> Gen Int
 getClsVar clsId jlId = gets $ fromJust . Map.lookup (clsId, jlId) . clsVarInds
