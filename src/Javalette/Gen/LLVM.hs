@@ -13,7 +13,7 @@ module Javalette.Gen.LLVM
   )
 where
 
-import Control.Monad (liftM2, void)
+import Control.Monad (liftM2, void, zipWithM_)
 import Control.Monad.Identity (Identity (runIdentity))
 import Control.Monad.State
   ( MonadState (get, put),
@@ -156,13 +156,13 @@ compileTopDef (ClsDescr clsId items _ _) = do
 compileFn :: Type -> L.Ident -> [Arg] -> [Stmt] -> Gen ()
 compileFn typ id params stmts = do
   llvmType <- toLLVMType typ
-  llvmParams <- generateFnParamList params
+  llvmParams <- mapM generateFnParam params
   emit L.Blank
   if id == "main"
     then emit $ L.FnDefExt [] llvmType id llvmParams
     else emit $ L.FnDef llvmType id llvmParams
   labelInstr "entry"
-  compileFnArgVars params llvmParams
+  zipWithM_ compileFnArgVar params (map (\(L.Parameter _ llvmArgId) -> llvmArgId) llvmParams)
   newVarTop
   compileStmts stmts
   if typ == Void
@@ -173,22 +173,15 @@ compileFn typ id params stmts = do
   where
     -- Convert a list of Javalette function arguments into a list of LLVM
     -- function params by converting the type and generating a name.
-    generateFnParamList :: [Arg] -> Gen [L.Param]
-    generateFnParamList [] = return []
-    generateFnParamList (Argument typ jlId : rest) = do
-      llvmType <- toLLVMType typ
-      llvmArgId <- newVarName
-      args <- generateFnParamList rest
-      return $ L.Parameter llvmType llvmArgId : args
+    generateFnParam :: Arg -> Gen L.Param
+    generateFnParam (Argument typ jlId) = liftM2 L.Parameter (toLLVMType typ) newVarName
     -- Emit instructions for allocating stack space and storing the value of
     -- function parameters.
-    compileFnArgVars :: [Arg] -> [L.Param] -> Gen ()
-    compileFnArgVars [] [] = return ()
-    compileFnArgVars (Argument typ jlId : rest1) (L.Parameter _ llvmArgId : rest2) = do
+    compileFnArgVar :: Arg -> L.Ident -> Gen ()
+    compileFnArgVar (Argument typ jlId) llvmArgId = do
       llvmType <- toLLVMType typ
       llvmStackId <- newVarInstr jlId typ
       emit $ L.Store llvmType (L.Loc llvmArgId) llvmStackId
-      compileFnArgVars rest1 rest2
 
 -- | Compile a list of statements into a list of instructions.
 compileStmts :: [Stmt] -> Gen ()

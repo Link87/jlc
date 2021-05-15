@@ -43,13 +43,14 @@ import Data.Maybe (fromJust)
 import Debug.Trace
 import Javalette.Check.Return (ReturnState (..), both)
 import Javalette.Check.TypeError (TypeError (..), TypeResult (..), pattern Err, pattern Ok)
+import qualified Javalette.Check.TypedAST as T
 import Javalette.Lang.Abs
 import Javalette.Lang.Print (printTree)
 
 -- * Type Check
 
 -- | An annotated program. Nothing special type-wise.
-type AnnotatedProg = Prog
+type AnnotatedProg = T.TypedProg
 
 -- | Run the type checker on a program.
 check :: Prog -> TypeResult AnnotatedProg

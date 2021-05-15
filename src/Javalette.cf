@@ -10,8 +10,6 @@ ClsDef.	    TopDef ::= "class" Ident "{" [ClsItem] "}" ;
 
 SubClsDef.  TopDef ::= "class" Ident "extends" Ident "{" [ClsItem] "}" ;
 
-internal ClsDescr. TopDef ::= "class" Ident "{" [ClsItem] [ClsVar] [ClsMeth] "}" ;
-
 separator nonempty TopDef "" ;
 
 Argument.   Arg ::= Type Ident;
@@ -23,20 +21,6 @@ InstVar.    ClsItem ::= Type Ident ";" ;
 MethDef.    ClsItem ::= Type Ident "(" [Arg] ")" Blk ;
 
 separator   ClsItem "" ;
-
--- class descriptor ----------------------------------------
-
-internal ClsVar.    ClsVar ::= Ident "." Type Ident ;
-
-internal [].        [ClsVar] ::= ;
-
-internal (:).       [ClsVar] ::= ClsVar ", " [ClsVar];
-
-internal ClsMeth.   ClsMeth ::= Ident "." Ident Type ;
-
-internal [].        [ClsMeth] ::= ;
-
-internal (:).       [ClsMeth] ::= ClsMeth ", " [ClsMeth];
 
 -- statements ----------------------------------------------
 
@@ -76,12 +60,6 @@ ForEach.    Stmt ::= "for" "(" Type Ident ":" Expr ")" Stmt ;
 
 SExpr.      Stmt ::= Expr  ";" ;
 
--- L-Values --------------------------------------------------
-
-internal ArrId. LValue ::= LValue "[" Expr "]" ;
-
-internal Id.    LValue ::= Ident ;
-
 -- Types ---------------------------------------------------
 
 Int.        Type ::= "int" ;
@@ -94,14 +72,9 @@ Void.       Type ::= "void" ;
 
 Array.      Type ::= Type "[]";
 
-Object.     Type ::= Ident ;
+Named.      Type ::= Ident ;
 
 separator   Type "," ;
-
-internal Fn.        Type ::= Type "(" [Type] ")" ;
-
-internal String.    Type ::= "String" ;
-
 
 -- Expressions ---------------------------------------------
 
@@ -148,18 +121,6 @@ EOr.        Expr ::= Expr1 "||" Expr ;
 coercions   Expr 9 ;
 
 separator   Expr "," ;
-
-internal ETyped.    Expr ::= "[" Expr ":" Type "]" ;
-
-internal ELValue.   Expr ::= LValue ;
-
-internal EObjInit.  Expr ::= "new" Type ;
-
-internal EArrAlloc. Expr ::= "new" Type [SizeItem];
-
-internal EMethCall. Expr ::= Expr "." Ident "(" [Expr] ")" ;
-
-internal EArrLen.   Expr ::= Expr "." "length" ;
 
 -- operators -----------------------------------------------
 
