@@ -4,7 +4,7 @@ entrypoints Prog ;
 
 Program.    Prog ::= [TopDef] ;
 
-FnDef.	    TopDef ::= Type Ident "(" [Arg] ")" Blk ;
+FnDef.	    TopDef ::= Type Ident "(" [Param] ")" Blk ;
 
 ClsDef.	    TopDef ::= "class" Ident "{" [ClsItem] "}" ;
 
@@ -12,13 +12,13 @@ SubClsDef.  TopDef ::= "class" Ident "extends" Ident "{" [ClsItem] "}" ;
 
 separator nonempty TopDef "" ;
 
-Argument.   Arg ::= Type Ident;
+Parameter.  Param ::= Type Ident;
 
-separator   Arg "," ;
+separator   Param "," ;
 
 InstVar.    ClsItem ::= Type Ident ";" ;
 
-MethDef.    ClsItem ::= Type Ident "(" [Arg] ")" Blk ;
+MethDef.    ClsItem ::= Type Ident "(" [Param] ")" Blk ;
 
 separator   ClsItem "" ;
 
@@ -82,7 +82,7 @@ EVar.       Expr9 ::= Ident ;
 
 ELitInt.    Expr9 ::= Integer ;
 
-ELitDoub.   Expr9 ::= Double;
+ELitDouble. Expr9 ::= Double;
 
 ELitTrue.   Expr9 ::= "true" ;
 

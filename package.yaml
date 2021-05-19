@@ -3,9 +3,9 @@ version:             0.1.0.0
 github:              "Link87/jlc"
 license:             EUPL-1.2
 license-file:        LICENCE
-author:              ["Marvin Gazibarić", "Vignesh Muthurajan"]
-maintainer:          ["gusgazma@student.gu.se", "vigmut@student.chalmers.se"]
-copyright:           "2021 Marvin Gazibarić, Vignesh Muthurajan"
+author:              ["Marvin Gazibarić"]
+maintainer:          ["gusgazma@student.gu.se"]
+copyright:           "2021 Marvin Gazibarić"
 
 extra-source-files:
 - README.md

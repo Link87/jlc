@@ -12,7 +12,8 @@ module Javalette.Check.TypeError (
 where
 
 import qualified Data.Text as T
-import Javalette.Lang.Abs
+import Javalette.Check.TypedAST
+import qualified Javalette.Lang.Abs as J
 
 -- | A result of the type checker. Is either a computed value or a `TypeError`.
 type TypeResult a = Either TypeError a
@@ -30,17 +31,20 @@ data TypeError
   | ExpectedFnType Type
   | ExpectedArrType Type
   | ExpectedObjType Type
-  | ExpectedLValue Expr
+  | ExpectedLValue J.Expr
   | ArgumentMismatch
-  | DuplicateVariable Ident
-  | DuplicateFunction Ident
-  | DuplicateInstanceVar Ident
-  | DuplicateClass Ident
-  | UndeclaredVar Ident
-  | ClassNotFound Ident
-  | MethodNotFound Ident
-  | UnknownProperty Ident
-  | InvalidAccessor Expr
+  | DuplicateDefinition TypeIdent
+  | DuplicateVariable VarIdent
+  | DuplicateFunction FnIdent
+  | DuplicateMethod FnIdent TypeIdent
+  | DuplicateInstanceVar VarIdent TypeIdent
+  | UndeclaredVar VarIdent
+  | FunctionNotFound FnIdent
+  | TypeNotFound TypeIdent
+  | ClassNotFound TypeIdent
+  | MethodNotFound FnIdent
+  | UnknownProperty VarIdent
+  | InvalidAccessor J.Expr
   | MainNotFound
   | MainArguments
   | MainReturnType
@@ -50,47 +54,53 @@ data TypeError
 instance Show TypeError where
   showsPrec _ (TypeMismatch got expected) =
     showString "Type mismatch in program: Got "
-      . showType got
+      . shows got
       . showString " but expected "
-      . showType expected
+      . shows expected
       . showString "."
   showsPrec _ (TypeMismatchOverloaded got [expected]) =
     showString "Type mismatch in program: Got "
-      . showType got
+      . shows got
       . showString " but expected "
-      . showType expected
+      . shows expected
       . showString "."
   showsPrec _ (TypeMismatchOverloaded got expected) =
     showString "Type mismatch in program: Got "
-      . showType got
+      . shows got
       . showString " but expected one of "
       . showTypes expected
       . showString "."
   showsPrec _ (ExpectedFnType got) =
-    showString "Type Mismatch: Expected a function but got " . showType got . showString "."
+    showString "Type Mismatch: Expected a function but got " . shows got . showString "."
   showsPrec _ (ExpectedArrType got) =
-    showString "Type Mismatch: Expected an array but got " . showType got . showString "."
+    showString "Type Mismatch: Expected an array but got " . shows got . showString "."
   showsPrec _ (ExpectedObjType got) =
-    showString "Type Mismatch: Expected an object but got " . showType got . showString "."
+    showString "Type Mismatch: Expected an object but got " . shows got . showString "."
   showsPrec _ (ExpectedLValue expr) =
     showString "Expected an lvalue but got expression " . shows expr . showString "."
   showsPrec _ ArgumentMismatch =
     showString "Type Mismatch: Function arguments do not match function definition."
-  showsPrec _ (DuplicateVariable (Ident id)) =
+  showsPrec _ (DuplicateDefinition id) =
+    showString "Ambiguous identifier: " . shows id . showString " used more than once."
+  showsPrec _ (DuplicateVariable id) =
     showString "Variable declared multiple times: " . shows id . showString "."
-  showsPrec _ (DuplicateFunction (Ident id)) =
-    showString "Duplicate identifier! Function name used before:" . shows id . showString "."
-  showsPrec _ (DuplicateInstanceVar (Ident id)) =
-    showString "Duplicate identifier! Instance variable name used before:" . shows id . showString "."
-  showsPrec _ (DuplicateClass (Ident id)) =
-    showString "Duplicate identifier! Class name used before:" . shows id . showString "."
-  showsPrec _ (UndeclaredVar (Ident id)) =
+  showsPrec _ (DuplicateFunction id) =
+    showString "Duplicate identifier. Function name used before:" . shows id . showString "."
+  showsPrec _ (DuplicateMethod fnId clsId) =
+    showString "Duplicate method: Identifier " . shows fnId . showString " used before in class " . shows clsId . showString "."
+  showsPrec _ (DuplicateInstanceVar varId clsId) =
+    showString "Duplicate instance variable: Identifier " . shows varId . showString " used before in class " . shows clsId . showString "."
+  showsPrec _ (UndeclaredVar id) =
     showString "Use of undeclared variable " . shows id . showString "."
-  showsPrec _ (ClassNotFound (Ident id)) =
+  showsPrec _ (FunctionNotFound id) =
+    showString "Function definition not found for function " . shows id . showString "."
+  showsPrec _ (TypeNotFound id) =
+    showString "Declaration for type " . shows id . showString " not found."
+  showsPrec _ (ClassNotFound id) =
     showString "Class definition not found for class " . shows id . showString "."
-  showsPrec _ (MethodNotFound (Ident id)) =
+  showsPrec _ (MethodNotFound id) =
     showString "Method definition not found for method " . shows id . showString "."
-  showsPrec _ (UnknownProperty (Ident id)) =
+  showsPrec _ (UnknownProperty id) =
     showString "Property " . shows id . showString " not found."
   showsPrec _ (InvalidAccessor expr) =
     showString "Accessor is invalid: '" . shows expr . showString "'."
@@ -101,21 +111,9 @@ instance Show TypeError where
     showString "Missing return statement: execution path without return found."
   showsPrec _ EmptyProgram = showString "No function or class definition found."
 
--- | The textual representation of a type. More readable than the derived
--- 'Show' instance of 'Type'.
-showType :: Type -> ShowS
-showType Int = showString "int"
-showType Double = showString "double"
-showType Boolean = showString "boolean"
-showType Void = showString "void"
-showType String = showString "String"
-showType (Array typ) = showType typ . showString "[]" 
-showType (Object (Ident id)) = showString $ T.unpack id
-showType (Fn typ args) = showString "fn " . showType typ . showString "(" . showTypes args . showString ")"
-
 -- | The textual representation of a list of types. Entries are separated by
 -- commas.
 showTypes :: [Type] -> ShowS
 showTypes [] = showString ""
-showTypes [typ] = showType typ
-showTypes (typ:types) = showType typ . showString ", " . showTypes types
+showTypes [typ] = shows typ
+showTypes (typ : types) = shows typ . showString ", " . showTypes types

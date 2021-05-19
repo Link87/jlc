@@ -6,15 +6,14 @@
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
 -- | Type check a Javalette Abstract Syntax Tree (AST) with the 'check'
--- function. Expressions ('Expr') are type annotated by wrapping them in
--- 'ETyped' expressions. Performs validity and return checking.
+-- function. Translates the original Javalette AST into a Typed AST. Performs
+-- also validity and return checking.
 --
 -- Converts syntax elements where the LR parser is not powerful enough. That is,
 -- lvalue expressions are converted to 'LValue's and 'ENew' (@new Expr@) and
 -- 'EDot' (@Expr . Expr@) expressions are converted to the corresponding
--- specialised expression for classes or arrays.
---
--- Creates also 'ClsDescr's from class top definitions. 
+-- specialised expression for classes or arrays. Creates also class descriptor
+-- annotations in 'ClsDef's.
 module Javalette.Check.TypeCheck
   ( TypeError (..),
     AnnotatedProg,
@@ -22,7 +21,7 @@ module Javalette.Check.TypeCheck
   )
 where
 
-import Control.Monad (when)
+import Control.Monad (when, (>=>))
 import Control.Monad.Except
   ( ExceptT,
     MonadError (catchError, throwError),
@@ -36,6 +35,7 @@ import Control.Monad.State
     gets,
     modify,
   )
+import Data.Foldable (foldrM)
 import Data.List (find)
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -43,82 +43,56 @@ import Data.Maybe (fromJust)
 import Debug.Trace
 import Javalette.Check.Return (ReturnState (..), both)
 import Javalette.Check.TypeError (TypeError (..), TypeResult (..), pattern Err, pattern Ok)
-import qualified Javalette.Check.TypedAST as T
-import Javalette.Lang.Abs
-import Javalette.Lang.Print (printTree)
+import Javalette.Check.TypedAST
+import qualified Javalette.Lang.Abs as J
 
 -- * Type Check
 
--- | An annotated program. Nothing special type-wise.
-type AnnotatedProg = T.TypedProg
+-- | A type-annotated program. Returned by the type checker.
+type AnnotatedProg = TypedProg
 
 -- | Run the type checker on a program.
-check :: Prog -> TypeResult AnnotatedProg
-check prog = do
-  -- First pass: save fns and classes. Also check for main function.
-  ctx <- saveGlobDefs prog
-  case lookupVarEntry (Ident "main") ctx of
-    Just (Fn Int []) -> Ok ctx
-    Just (Fn Int _) -> Err MainArguments
-    Just (Fn _ _) -> Err MainReturnType
-    Nothing -> Err MainNotFound
-  -- Second pass: check types in fns and methods
-  runChk ctx $ checkProgram prog
+check :: J.Prog -> TypeResult AnnotatedProg
+check prog@(J.Program tds) = do
+  -- First pass: collect identifiers and what kind of definition they belong to.
+  defs <- collectGlobIds prog
+  runChk preludeContext $ do
+    -- Second pass: save fns and classes. Also check for main function.
+    setDefKinds defs
+    mapM_ saveTopDef tds
+    main <- lookupFnEntry "main"
+    case main of
+      Just (Fn Int []) -> return ()
+      Just (Fn Int _) -> throwError MainArguments
+      Just (Fn _ _) -> throwError MainReturnType
+      Nothing -> throwError MainNotFound
+    -- Third pass: check types in fns and methods
+    checkProgram prog
 
--- * Type checking functions (first pass)
+-- * Collecting global identifiers (first pass)
 
--- | Save the top-level definitions (classes and functions) in the context.
--- Main function for the first pass.
-saveGlobDefs :: Prog -> TypeResult Context
-saveGlobDefs (Program []) = Err EmptyProgram
-saveGlobDefs (Program [td]) = do
-  res <- createTopDefEntry td
-  case res of
-    Left (id, typ) -> return $ insertVarEntry (id, typ) preludeContext
-    Right cls -> return $ insertClassEntry cls preludeContext
-saveGlobDefs (Program (td : tds)) = do
-  res <- createTopDefEntry td
-  case res of
-    Left (id, typ) -> do
-      context <- saveGlobDefs $ Program tds
-      if not (memberVarEntry id context) && not (memberClassEntry id context)
-        then Ok (insertVarEntry (id, typ) context)
-        else Err $ DuplicateFunction id
-    Right cls@(id, _, _) -> do
-      context <- saveGlobDefs $ Program tds
-      if not (memberVarEntry id context) && not (memberClassEntry id context)
-        then Ok (insertClassEntry cls context)
-        else Err $ DuplicateClass id
+-- | The kinds of definitions that can occur on the top-level.
+data DefKind = ClsKind
+  deriving (Show, Eq)
 
--- | Evaluate a single 'TopDef'. A functions is converted into a 'VarEntry'.
--- For classes, a 'ClassContext' is generated.
-createTopDefEntry :: TopDef -> TypeResult (Either VarEntry ClassContext)
-createTopDefEntry (FnDef typ id args _blk) = Ok $ Left (id, Fn typ (argTypes args))
-createTopDefEntry (ClsDef id elems) = do
-  res <- createClassItemEntries elems id
-  return $ Right (id, Nothing, res)
-createTopDefEntry (SubClsDef id super elems) = do
-  res <- createClassItemEntries elems id
-  return $ Right (id, Just super, res)
-
--- | Strips the identifiers of arguments in a list of arguments to convert it
--- into a list of types.
-argTypes :: [Arg] -> [Type]
-argTypes = map (\(Argument typ _id) -> typ)
-
--- | Obtain the types of declarations in a class body.
-createClassItemEntries :: [ClsItem] -> Ident -> TypeResult (Map Ident Type)
-createClassItemEntries [] _ = return Map.empty
-createClassItemEntries ((InstVar typ id) : rest) cls = do
-  res <- createClassItemEntries rest cls
-  if not $ Map.member id res
-    then return $ Map.insert id typ res
-    else throwError $ DuplicateInstanceVar id
-createClassItemEntries ((MethDef typ id args _blk) : rest) cls = do
-  res <- createClassItemEntries rest cls
-  if not $ Map.member id res
-    then return $ Map.insert id (Fn typ (Object cls : argTypes args)) res
-    else throwError $ DuplicateFunction id
+-- | Collect the names and according 'DefKind's of top-level definitions. Throws
+-- a 'TypeError', if an identifier occurs more than once.
+--
+-- Functions do not share a name space with type definitions such as classes and
+-- structs and are therefore ignored.
+collectGlobIds :: J.Prog -> TypeResult DefKinds
+collectGlobIds (J.Program []) = Err EmptyProgram
+collectGlobIds (J.Program tds) = foldrM insertDef Map.empty tds
+  where
+    insertDef :: J.TopDef -> DefKinds -> TypeResult DefKinds
+    insertDef td defs
+      | Map.notMember (topDefId td) defs = return $ Map.insert (topDefId td) (topDefKind td) defs
+      | otherwise = Err $ DuplicateDefinition (topDefId td)
+    topDefId (J.FnDef _ id _ _) = toTypeId id
+    topDefId (J.ClsDef id _) = toTypeId id
+    topDefId (J.SubClsDef id _ _) = toTypeId id
+    topDefKind J.ClsDef {} = ClsKind
+    topDefKind J.SubClsDef {} = ClsKind
 
 -- * Type checking functions (second pass)
 
@@ -137,96 +111,162 @@ newtype Chk a = MkChk (StateT Context (ExceptT TypeError Identity) a)
 runChk :: Context -> Chk AnnotatedProg -> TypeResult AnnotatedProg
 runChk ctx (MkChk rd) = runIdentity $ runExceptT $ evalStateT rd ctx
 
--- | Typecheck the program. Main function for the second pass.
--- Functions and classes have to be present in context.
-checkProgram :: Prog -> Chk AnnotatedProg
-checkProgram (Program tds) = Program <$> mapM checkTopDef tds
+-- | Save a 'TopDef' into the current 'Context'.
+saveTopDef :: J.TopDef -> Chk ()
+saveTopDef (J.FnDef ret id params _blk) = do
+  let fnId = toFnId id
+  castedRet <- castType ret
+  castedArgs <- paramTypes params
+  extendFnContext (toFnId id, castedRet, castedArgs)
+saveTopDef (J.ClsDef id elems) = do
+  let clsId = toTypeId id
+  meths <- createMethodEntries elems clsId
+  instVars <- createInstVarEntries elems clsId
+  insertClassEntry $
+    ClsContext
+      { clsName = clsId,
+        super = Nothing,
+        meths = meths,
+        instVars = instVars
+      }
+saveTopDef (J.SubClsDef id super elems) = do
+  let clsId = toTypeId id
+  meths <- createMethodEntries elems clsId
+  instVars <- createInstVarEntries elems clsId
+  insertClassEntry $
+    ClsContext
+      { clsName = clsId,
+        super = Just (toTypeId super),
+        meths = meths,
+        instVars = instVars
+      }
+
+-- | Collect the types of methods in a class body.
+createMethodEntries :: [J.ClsItem] -> TypeIdent -> Chk (Map FnIdent Type)
+createMethodEntries [] _ = return Map.empty
+createMethodEntries (J.InstVar {} : rest) clsId = createMethodEntries rest clsId
+createMethodEntries ((J.MethDef ret id params _blk) : rest) clsId = do
+  let fnId = toFnId id
+  castedRet <- castType ret
+  castedArgs <- fmap (Object clsId :) (paramTypes params)
+  meths <- createMethodEntries rest clsId
+  if not $ Map.member fnId meths
+    then return $ Map.insert fnId (Fn castedRet castedArgs) meths
+    else throwError $ DuplicateMethod fnId clsId
+
+-- | Collect the types of instance variables in a class body.
+createInstVarEntries :: [J.ClsItem] -> TypeIdent -> Chk (Map VarIdent Type)
+createInstVarEntries [] _ = return Map.empty
+createInstVarEntries ((J.InstVar typ id) : rest) clsId = do
+  let varId = toVarId id
+  casted <- castType typ
+  instVars <- createInstVarEntries rest clsId
+  if not $ Map.member varId instVars
+    then return $ Map.insert varId casted instVars
+    else throwError $ DuplicateInstanceVar varId clsId
+createInstVarEntries (J.MethDef {} : rest) clsId = createInstVarEntries rest clsId
+
+-- * Type checking functions (third pass)
+
+-- | Typecheck the program. Main function for the third pass.
+-- Functions and classes have to be present in context from previous passes.
+checkProgram :: J.Prog -> Chk AnnotatedProg
+checkProgram (J.Program tds) = Program <$> mapM checkTopDef tds
 
 -- | Typecheck a function's or class' body. Returns the input augmented with
 -- type annotations if succesful or throws a 'TypeError' otherwise.
-checkTopDef :: TopDef -> Chk TopDef
-checkTopDef (FnDef typ id args (Block stmts)) = do
-  newTop
-  saveArgs args
-  when (typ == Void) $ setReturnState Return
-  annotated <- checkStmts stmts typ
+checkTopDef :: J.TopDef -> Chk TopDef
+checkTopDef (J.FnDef ret id params (J.Block stmts)) = do
+  castedRet <- castType ret
+  castedArgs <- mapM castParam params
+  newVarTop
+  saveParams params
+  when (castedRet == Void) $ setReturnState Return
+  annotated <- checkStmts stmts castedRet
   checkReturnState
   resetReturnState
-  discardTop
-  return $ FnDef typ id args (Block annotated)
-checkTopDef (ClsDef id elems) = do
-  pushClassTop id True
-  enterClass id
+  discardVarTop
+  return $ FnDef castedRet (toFnId id) castedArgs (Block annotated)
+checkTopDef (J.ClsDef id elems) = do
+  let clsId = toTypeId id
+  pushClassTop clsId True
+  enterClass clsId
   annotated <- mapM checkClassItem elems
-  discardTop
+  discardClassTop
   leaveClass
-  createClassDescriptor (ClsDef id annotated)
-checkTopDef (SubClsDef id _ elems) = checkTopDef $ ClsDef id elems
+  createClassDescriptor clsId annotated
+checkTopDef (J.SubClsDef id _ elems) = checkTopDef $ J.ClsDef id elems
 
 -- | Typecheck a declaration inside a class. Returns the input augmented with
 -- type annotations if succesful or throws a 'TypeError' otherwise.
-checkClassItem :: ClsItem -> Chk ClsItem
-checkClassItem var@(InstVar _ _) = return var -- nothing to do here
-checkClassItem (MethDef typ id args (Block stmts)) = do
-  newTop
-  self <- selfArg . fromJust <$> getCurrentClassName
-  saveArgs (self : args)
-  when (typ == Void) $ setReturnState Return
-  annotated <- checkStmts stmts typ
+checkClassItem :: J.ClsItem -> Chk ClsItem
+checkClassItem (J.InstVar typ id) = do
+  casted <- castType typ
+  return $ InstVar casted (toVarId id)
+checkClassItem (J.MethDef ret id params (J.Block stmts)) = do
+  castedRet <- castType ret
+  castedArgs <- mapM castParam params
+  self <- selfParam . J.Ident . ident . fromJust <$> getCurrentClassName
+  castedSelf <- castParam self
+  newVarTop
+  saveParams (self : params)
+  when (castedRet == Void) $ setReturnState Return
+  annotated <- checkStmts stmts castedRet
   checkReturnState
-  discardTop
-  return $ MethDef typ id (self : args) (Block annotated)
+  resetReturnState
+  discardVarTop
+  return $ MethDef castedRet (toFnId id) (castedSelf : castedArgs) (Block annotated)
 
 -- | Typecheck a list of statements. Returns the input augmented with type
 -- annotations if succesful or throws a 'TypeError' otherwise.
-checkStmts :: [Stmt] -> Type -> Chk [Stmt]
+checkStmts :: [J.Stmt] -> Type -> Chk [Stmt]
 checkStmts stmts ret = mapM (`checkStmt` ret) stmts
 
 -- | Typecheck a single statement. Returns the input augmented with type
 -- annotations if succesful or throws a 'TypeError' otherwise.
-checkStmt :: Stmt -> Type -> Chk Stmt
-checkStmt Empty _ = return Empty
-checkStmt (BStmt (Block stmts)) ret = do
-  newTop
+checkStmt :: J.Stmt -> Type -> Chk Stmt
+checkStmt J.Empty _ = return Empty
+checkStmt (J.BStmt (J.Block stmts)) ret = do
+  newVarTop
   annotated <- checkStmts stmts ret
   state <- getReturnState
-  discardTop
+  discardVarTop
   setReturnState state
   return (BStmt (Block annotated))
-checkStmt (Decl typ items) _ = do
-  annotated <- checkDeclItems items typ
-  return $ Decl typ annotated
-checkStmt (Ass expr1 expr2) _ = do
+checkStmt (J.Decl typ items) _ = do
+  casted <- castType typ
+  annotated <- checkDeclItems items casted
+  return $ Decl casted annotated
+checkStmt (J.Ass expr1 expr2) _ = do
   lval <- coerceLVal expr1
-  typ <- lookupVar lval
-  annotated <- checkExpr expr2 typ
-  return $ Ass (ETyped (ELValue lval) typ) annotated
-checkStmt (Incr expr) _ = do
+  annotated <- checkExpr expr2 (getLValType lval)
+  return $ Ass lval annotated
+checkStmt (J.Incr expr) _ = do
   lval <- coerceLVal expr
-  checkVar lval Int
-  return $ Incr (ELValue lval)
-checkStmt (Decr expr) _ = do
+  checkLVal lval Int
+  return $ Incr lval
+checkStmt (J.Decr expr) _ = do
   lval <- coerceLVal expr
-  checkVar lval Int
-  return $ Decr (ELValue lval)
-checkStmt (Ret expr) ret = do
+  checkLVal lval Int
+  return $ Decr lval
+checkStmt (J.Ret expr) ret = do
   annotated <- checkExpr expr ret
   setReturnState Return
   return $ Ret annotated
-checkStmt VRet ret =
+checkStmt J.VRet ret =
   if ret == Void
     then setReturnState Return >> return VRet
     else throwError $ TypeMismatch ret Void
-checkStmt (Cond expr stmt) ret = do
+checkStmt (J.Cond expr stmt) ret = do
   annotatedExpr <- checkExpr expr Boolean
   state <- getReturnState
   annnotatedStmt <- checkStmt stmt ret
   case expr of
-    ELitTrue -> return $ Cond annotatedExpr annnotatedStmt
+    J.ELitTrue -> return $ Cond annotatedExpr annnotatedStmt
     _ -> do
       overrideReturnState state
       return $ Cond annotatedExpr annnotatedStmt
-checkStmt (CondElse expr stmt1 stmt2) ret = do
+checkStmt (J.CondElse expr stmt1 stmt2) ret = do
   annotatedExpr <- checkExpr expr Boolean
   state <- getReturnState
   annotatedStmt1 <- checkStmt stmt1 ret
@@ -235,40 +275,42 @@ checkStmt (CondElse expr stmt1 stmt2) ret = do
   annotatedStmt2 <- checkStmt stmt2 ret
   branch2 <- getReturnState
   case expr of
-    ELitTrue -> do
+    J.ELitTrue -> do
       overrideReturnState (state <> branch1)
       return $ CondElse annotatedExpr annotatedStmt1 annotatedStmt2
-    ELitFalse -> do
+    J.ELitFalse -> do
       overrideReturnState (state <> branch2)
       return $ CondElse annotatedExpr annotatedStmt1 annotatedStmt2
     _ -> do
       overrideReturnState (state <> both branch1 branch2)
       return $ CondElse annotatedExpr annotatedStmt1 annotatedStmt2
-checkStmt (While expr stmt) ret = do
+checkStmt (J.While expr stmt) ret = do
   annotatedExpr <- checkExpr expr Boolean
   state <- getReturnState
   annotatedStmt <- checkStmt stmt ret
   case expr of
-    ELitTrue -> return $ While annotatedExpr annotatedStmt
+    J.ELitTrue -> return $ While annotatedExpr annotatedStmt
     _ -> do
       overrideReturnState state
       return $ While annotatedExpr annotatedStmt
-checkStmt (ForEach typ id expr stmt) ret = do
-  annotatedExpr <- checkExpr expr (Array typ)
-  newTop
-  extendContext (id, typ)
+checkStmt (J.ForEach typ id expr stmt) ret = do
+  let varId = toVarId id
+  casted <- castType typ
+  annotatedExpr <- checkExpr expr (Array casted)
+  newVarTop
+  extendContext (varId, casted)
   state <- getReturnState
   annotatedStmt <- checkStmt stmt ret
-  discardTop
+  discardVarTop
   overrideReturnState state
-  return $ ForEach typ id annotatedExpr annotatedStmt
-checkStmt (SExpr expr) _ = do
+  return $ ForEach casted varId annotatedExpr annotatedStmt
+checkStmt (J.SExpr expr) _ = do
   annotated <- checkExpr expr Void
   return $ SExpr annotated
 
 -- | Typecheck a single expression. Returns the input augmented with type
 -- annotations if succesful or throws a 'TypeError' otherwise.
-checkExpr :: Expr -> Type -> Chk Expr
+checkExpr :: J.Expr -> Type -> Chk TExpr
 checkExpr expr typ = do
   annotated <- inferExpr expr
   let inferred = getType annotated
@@ -278,31 +320,33 @@ checkExpr expr typ = do
     else throwError $ TypeMismatch inferred typ
 
 -- | Check a variable's type. Throws a 'TypeError' on type mismatch.
-checkVar :: LValue -> Type -> Chk ()
-checkVar lval typ = do
-  saved <- lookupVar lval
-  if saved == typ
+checkLVal :: LValue -> Type -> Chk ()
+checkLVal lval typ = do
+  let lvalType = getLValType lval
+  if lvalType == typ
     then return ()
-    else throwError $ TypeMismatch saved typ
+    else throwError $ TypeMismatch lvalType typ
 
 -- | Typecheck a list of 'Item's. Returns the input augmented with type
 -- annotations if succesful or throws a 'TypeError' otherwise.
-checkDeclItems :: [DeclItem] -> Type -> Chk [DeclItem]
+checkDeclItems :: [J.DeclItem] -> Type -> Chk [DeclItem]
 checkDeclItems [] typ = return []
 checkDeclItems (item : items) typ = case item of
-  NoInit id -> do
-    extendContext (id, typ)
+  J.NoInit id -> do
+    let varId = toVarId id
+    extendContext (varId, typ)
     next <- checkDeclItems items typ
-    return $ item : next
-  Init id expr -> do
+    return $ NoInit varId : next
+  J.Init id expr -> do
+    let varId = toVarId id
     annotated <- inferExpr expr
     let inferred = getType annotated
     sub <- isSubtype inferred typ
     if inferred == typ || sub
       then do
-        extendContext (id, typ)
+        extendContext (varId, typ)
         next <- checkDeclItems items typ
-        return $ Init id annotated : next
+        return $ Init varId annotated : next
       else throwError $ TypeMismatch inferred typ
 
 -- | Typecheck the arguments of a function call. Returns the input augmented
@@ -310,7 +354,7 @@ checkDeclItems (item : items) typ = case item of
 -- 'True' is specified, the function is treated as a method and the first
 -- parameter is ignored, i.e. the first argument is checked against the second
 -- parameter.
-checkFnArgs :: [Expr] -> Type -> Bool -> Chk [Expr]
+checkFnArgs :: [J.Expr] -> Type -> Bool -> Chk [TExpr]
 checkFnArgs exprs (Fn ret (typ : types)) True = checkFnArgs exprs (Fn ret types) False
 checkFnArgs exprs fntype@(Fn ret types) False = case (exprs, types) of
   ([], []) -> return []
@@ -329,99 +373,102 @@ checkFnArgs _exprs typ _ = throwError $ ExpectedFnType typ
 -- | Infer the type of an expression. Augments the expression and (if applicable)
 -- any subexpressions with type annotations. Typechecks subexpressions, which
 -- can lead to a 'TypeError' being throwin.
-inferExpr :: Expr -> Chk Expr
-inferExpr expr@(EVar id) = ETyped expr <$> lookupVar (Id id)
-inferExpr expr@(ELitInt _) = return $ ETyped expr Int
-inferExpr expr@(ELitDoub _) = return $ ETyped expr Double
-inferExpr ELitTrue = return $ ETyped ELitTrue Boolean
-inferExpr ELitFalse = return $ ETyped ELitFalse Boolean
-inferExpr (ENull id) = do
-  typ <- lookupClass id
-  return $ ETyped (ENull id) typ
-inferExpr (ECall id exprs) = do
-  typ <- lookupVar (Id id)
+inferExpr :: J.Expr -> Chk TExpr
+inferExpr (J.EVar id) = let varId = toVarId id in EVar varId <$> findVar varId
+inferExpr (J.ELitInt int) = return $ ELitInt int
+inferExpr (J.ELitDouble doub) = return $ ELitDouble doub
+inferExpr J.ELitTrue = return ELitTrue
+inferExpr J.ELitFalse = return ELitFalse
+inferExpr (J.ENull id) = do
+  let clsId = toTypeId id
+  typ <- lookupClass clsId
+  return $ ENull clsId typ
+inferExpr (J.ECall id exprs) = do
+  let fnId = toFnId id
+  typ <- findFn fnId
   annotated <- checkFnArgs exprs typ False
   -- only type with return type of function, not with function type itself
   case typ of
-    (Fn ret _) -> return $ ETyped (ECall id annotated) ret
-inferExpr expr@(EString _) = return $ ETyped expr String
-inferExpr (ENew typ sizes) =
+    (Fn ret _) -> return $ ECall fnId annotated ret
+inferExpr (J.EString str) = return $ EString str
+inferExpr (J.ENew typ sizes) = do
+  casted <- castType typ
   case sizes of
-    [] -> inferExpr $ EObjInit typ
-    _ -> inferExpr $ EArrAlloc typ sizes
-inferExpr (EArrIndex expr1 expr2) = do
+    [] ->
+      case casted of
+        Object clsId -> return $ EObjInit casted
+        _ -> throwError $ ExpectedObjType casted
+    _ -> do
+      (annotated, arrType) <- inferSizeItems sizes casted
+      return $ EArrAlloc casted annotated arrType
+inferExpr (J.EArrIndex expr1 expr2) = do
   annotatedArr <- inferExpr expr1
   annotatedIndex <- checkExpr expr2 Int
-  case annotatedArr of
-    ETyped _ (Array inner) -> return $ ETyped (EArrIndex annotatedArr annotatedIndex) inner
-    ETyped _ typ -> throwError $ ExpectedArrType typ
-inferExpr (EDot expr (EVar id)) =
-  if id == "length"
-    then inferExpr (EArrLen expr)
-    else throwError $ UnknownProperty id
-inferExpr (EDot expr (ECall id args)) = inferExpr (EMethCall expr id args)
-inferExpr (EDot _ expr) = throwError $ InvalidAccessor expr
-inferExpr (ENeg expr) = do
+  case getType annotatedArr of
+    (Array inner) -> return $ EArrIndex annotatedArr annotatedIndex inner
+    typ -> throwError $ ExpectedArrType typ
+inferExpr (J.EDot expr (J.EVar id)) = do
+  let varId = toVarId id
+  if varId == "length"
+    then do
+      annotated <- inferExpr expr
+      case getType annotated of
+        (Array typ) -> return $ EArrLen annotated
+        typ -> throwError $ ExpectedArrType typ
+    else throwError $ UnknownProperty varId
+inferExpr (J.EDot expr (J.ECall id args)) = do
+  let fnId = toFnId id
+  annotatedObj <- inferExpr expr
+  case getType annotatedObj of
+    (Object cls) -> do
+      typ <- lookupMethod fnId cls
+      annotatedArgs <- checkFnArgs args typ True
+      -- only type with return type of function, not with function type itself
+      case typ of
+        (Fn ret _) -> return $ EMethCall annotatedObj fnId annotatedArgs ret
+    typ -> throwError $ ExpectedObjType typ
+inferExpr (J.EDot _ expr) = throwError $ InvalidAccessor expr
+inferExpr (J.ENeg expr) = do
   annotated <- inferUn expr [Int, Double]
-  return $ ETyped (ENeg annotated) (getType annotated)
-inferExpr (ENot expr) = do
+  return $ ENeg annotated (getType annotated)
+inferExpr (J.ENot expr) = do
   annotated <- checkExpr expr Boolean
-  return $ ETyped (ENot annotated) Boolean
-inferExpr (EMul expr1 op expr2) = do
+  return $ ENot annotated
+inferExpr (J.EMul expr1 op expr2) = do
   (annotated1, annotated2) <- inferBin expr1 expr2 exprType
-  return $ ETyped (EMul annotated1 op annotated2) (getType annotated1)
+  return $ EMul annotated1 (castMulOp op) annotated2 (getType annotated1)
   where
-    exprType = if op == Mod then [Int] else [Int, Double]
-inferExpr (EAdd expr1 op expr2) = do
+    exprType = if castMulOp op == Mod then [Int] else [Int, Double]
+inferExpr (J.EAdd expr1 op expr2) = do
   (annotated1, annotated2) <- inferBin expr1 expr2 [Int, Double]
-  return $ ETyped (EAdd annotated1 op annotated2) (getType annotated1)
-inferExpr (ERel expr1 op expr2) = do
+  return $ EAdd annotated1 (castAddOp op) annotated2 (getType annotated1)
+inferExpr (J.ERel expr1 op expr2) = do
   catchError
     ( do
         (annotated1, annotated2) <- inferBinObj expr1 expr2
-        return $ ETyped (ERel annotated1 op annotated2) Boolean
+        return $ ERel annotated1 relOp annotated2
     )
     ( \_ -> do
         (annotated1, annotated2) <- inferBin expr1 expr2 exprType
-        return $ ETyped (ERel annotated1 op annotated2) Boolean
+        return $ ERel annotated1 relOp annotated2
     )
   where
-    exprType = if op == EQU || op == NE then [Int, Double, Boolean] else [Int, Double]
-inferExpr (EAnd expr1 expr2) = do
+    relOp = castRelOp op
+    exprType = if relOp == EQU || relOp == NE then [Int, Double, Boolean] else [Int, Double]
+inferExpr (J.EAnd expr1 expr2) = do
   (annotated1, annotated2) <- inferBin expr1 expr2 [Boolean]
-  return $ ETyped (EAnd annotated1 annotated2) Boolean
-inferExpr (EOr expr1 expr2) = do
+  return $ EAnd annotated1 annotated2
+inferExpr (J.EOr expr1 expr2) = do
   (annotated1, annotated2) <- inferBin expr1 expr2 [Boolean]
-  return $ ETyped (EOr annotated1 annotated2) Boolean
-inferExpr (EObjInit typ) =
-  case typ of
-    Object id -> return $ ETyped (EObjInit typ) typ
-    _ -> throwError $ ExpectedObjType typ
-inferExpr (EArrAlloc innerType sizes) = do
-  (annotated, arrType) <- inferSizeItems sizes innerType
-  return $ ETyped (EArrAlloc innerType annotated) arrType
-inferExpr (EMethCall expr id exprs) = do
-  annotatedObj <- inferExpr expr
-  case annotatedObj of
-    ETyped _ (Object cls) -> do
-      typ <- lookupMethod id cls
-      annotatedArgs <- checkFnArgs exprs typ True
-      -- only type with return type of function, not with function type itself
-      case typ of
-        (Fn ret _) -> return $ ETyped (EMethCall annotatedObj id annotatedArgs) ret
-    ETyped _ typ -> throwError $ ExpectedObjType typ
-inferExpr (EArrLen expr) = do
-  annotated <- inferExpr expr
-  case annotated of
-    ETyped inner (Array typ) -> return $ ETyped (EArrLen annotated) Int
-    ETyped inner typ -> throwError $ ExpectedArrType typ
-inferExpr expr = error $ "Don't know how to handle expression " ++ show expr
+  return $ EOr annotated1 annotated2
+
+-- inferExpr expr = error $ "Don't know how to handle expression " ++ show expr
 
 -- | Infer the type for an unary expression and return the expression augmented
 -- with type information. The inferred type has to be one of the given types.
 -- Otherwise, a 'TypeError' is thrown. 'Array' and 'Object' types are matched
 -- exactly.
-inferUn :: Expr -> [Type] -> Chk Expr
+inferUn :: J.Expr -> [Type] -> Chk TExpr
 inferUn expr types = do
   annotated <- inferExpr expr
   let inferred = getType annotated
@@ -433,7 +480,7 @@ inferUn expr types = do
 -- information each. Both subexpressions have to match in their types and the
 -- inferred type has to be one of the given types. Otherwise, a 'TypeError' is
 -- thrown. 'Array' and 'Object' types are matched exactly.
-inferBin :: Expr -> Expr -> [Type] -> Chk (Expr, Expr)
+inferBin :: J.Expr -> J.Expr -> [Type] -> Chk (TExpr, TExpr)
 inferBin expr1 expr2 types = do
   annotated1 <- inferExpr expr1
   let inferred = getType annotated1
@@ -447,7 +494,7 @@ inferBin expr1 expr2 types = do
 -- information each. Both subexpressions have to be objects and be of the same
 -- type or one has to be a subtype of the other. Otherwise, a 'TypeError' is
 -- thrown.
-inferBinObj :: Expr -> Expr -> Chk (Expr, Expr)
+inferBinObj :: J.Expr -> J.Expr -> Chk (TExpr, TExpr)
 inferBinObj expr1 expr2 = do
   annotated1 <- inferExpr expr1
   let inferred = getType annotated1
@@ -462,39 +509,39 @@ inferBinObj expr1 expr2 = do
 -- in 'Array' constructors corresponding to that number. Expressions specifying
 -- the size of each dimension are type checked and type annotated. Throws a
 -- 'TypeError', if a size is not 'Int'.
-inferSizeItems :: [SizeItem] -> Type -> Chk ([SizeItem], Type)
+inferSizeItems :: [J.SizeItem] -> Type -> Chk ([SizeItem], Type)
 inferSizeItems [] typ = return ([], typ)
-inferSizeItems (SizeSpec expr : rest) typ = do
+inferSizeItems (J.SizeSpec expr : rest) typ = do
   annotated <- checkExpr expr Int
   (items, wrappedType) <- inferSizeItems rest typ
   return (SizeSpec annotated : items, Array wrappedType)
 
 -- * Type checking helper functions
 
--- | Transmute an expression into an lvalue. Performs type checks on nested
+-- | Convert a list of parameters into a list of corresponding types.
+paramTypes :: [J.Param] -> Chk [Type]
+paramTypes = mapM ((\(J.Parameter typ _id) -> return typ) >=> castType)
+
+-- | Convert an expression into an lvalue. Performs type checks on nested
 -- expressions. Fails with a 'TypeError', if an expression cannot occur as an
 -- lvalue.
-coerceLVal :: Expr -> Chk LValue
-coerceLVal (EVar id) = return $ Id id
-coerceLVal (EArrIndex expr1 expr2) = do
+coerceLVal :: J.Expr -> Chk LValue
+coerceLVal (J.EVar id) = let varId = toVarId id in VarVal varId <$> findVar varId
+coerceLVal (J.EArrIndex expr1 expr2) = do
   lval <- coerceLVal expr1
   annotated <- checkExpr expr2 Int
-  return $ ArrId lval annotated
+  case getLValType lval of
+    Array typ -> return $ ArrVal lval annotated typ
 coerceLVal expr = throwError $ ExpectedLValue expr
 
 -- | Save the function arguments in the variable context stack top layer.
-saveArgs :: [Arg] -> Chk ()
-saveArgs [] = return ()
-saveArgs (arg : args) = case arg of
-  Argument typ id -> do
-    extendContext (id, typ)
-    saveArgs args
-
--- | Get the type of a typed expression.
-getType :: Expr -> Type
-getType expr = case expr of
-  ETyped _ typ -> typ
-  _ -> error "Not a typed expression!"
+saveParams :: [J.Param] -> Chk ()
+saveParams =
+  mapM_
+    ( \(J.Parameter typ id) -> do
+        casted <- castType typ
+        extendContext (toVarId id, casted)
+    )
 
 -- | Check if an object type is a subtype of another object type. Returns
 -- 'False' if one of the types is not an object.
@@ -511,37 +558,34 @@ isSubtype _ _ = return False
 
 -- | The @self@ argument of methods. Requires the name of the class that the
 -- method belongs to.
-selfArg :: Ident -> Arg
-selfArg cls = Argument (Object cls) "self"
+selfParam :: J.Ident -> J.Param
+selfParam id = J.Parameter (J.Named id) "self"
 
--- | Augment class entries in the AST with class descriptors by converting
--- 'ClsDef' and 'SubClsDef' into 'ClsDescr'.
-createClassDescriptor :: TopDef -> Chk TopDef
-createClassDescriptor (SubClsDef id _ items) = createClassDescriptor $ ClsDef id items
-createClassDescriptor (ClsDef id items) = do
-  addClassItems (ClsDescr id items [] []) id
+-- | Generate a 'ClsDef' class descriptor from a classes identifier and members.
+createClassDescriptor :: TypeIdent -> [ClsItem] -> Chk TopDef
+createClassDescriptor clsId items = do
+  ivars <- instVarList clsId items clsId
+  methods <- methodList clsId items clsId
+  return $ ClsDef clsId items ivars methods
   where
-    addClassItems :: TopDef -> Ident -> Chk TopDef
-    addClassItems descr@(ClsDescr cls items ivars meths) cur = do
-      ctx <- get
-      case Map.lookup cur (classes ctx) of
-        Just (_, Just super, mems) -> do
-          descrSuper <- addClassItems descr super
-          case descrSuper of
-            (ClsDescr _ _ superVars superMeths) -> do
-              let (ivars, meths) = getItems (Map.toList mems) cur
-              return $ ClsDescr cls items (mergeVars superVars ivars) (mergeMeths superMeths meths)
-        Just (_, Nothing, mems) -> do
-          let (ivars, meths) = getItems (Map.toList mems) cur
-          return $ ClsDescr cls items ivars meths
-    getItems :: [(Ident, Type)] -> Ident -> ([ClsVar], [ClsMeth])
-    getItems [] _ = return []
-    getItems ((id, Fn ret args) : rest) cls =
-      let (ivars, meths) = getItems rest cls
-       in (ivars, ClsMeth cls id (Fn ret args) : meths)
-    getItems ((id, typ) : rest) cls =
-      let (ivars, meths) = getItems rest cls
-       in (ClsVar cls typ id : ivars, meths)
+    instVarList :: TypeIdent -> [ClsItem] -> TypeIdent -> Chk [ClsVar]
+    instVarList clsId items curId = do
+      cls <- fromJust <$> lookupClassEntry curId
+      let thisInstVars = map (\(id, typ) -> ClsVar curId typ id) (Map.toList $ instVars cls)
+      case super cls of
+        Just superId -> do
+          superInstVars <- instVarList clsId items superId
+          return $ mergeVars superInstVars thisInstVars
+        Nothing -> return thisInstVars
+    methodList :: TypeIdent -> [ClsItem] -> TypeIdent -> Chk [ClsMeth]
+    methodList clsId items curId = do
+      cls <- fromJust <$> lookupClassEntry curId
+      let thisMeths = map (uncurry $ ClsMeth curId) (Map.toList $ meths cls)
+      case super cls of
+        Just superId -> do
+          superMeths <- methodList clsId items superId
+          return $ mergeMeths superMeths thisMeths
+        Nothing -> return thisMeths
     mergeVars :: [ClsVar] -> [ClsVar] -> [ClsVar]
     mergeVars superVars thisVars = superVars ++ thisVars
     mergeMeths :: [ClsMeth] -> [ClsMeth] -> [ClsMeth]
@@ -552,192 +596,314 @@ createClassDescriptor (ClsDef id items) = do
         Just meth -> mergeMeths superMeths thisMeths
         Nothing -> superMeth : mergeMeths superMeths thisMeths
 
+-- Specialise an 'J.Ident' into a variable identifier ('VarIdent').
+toVarId :: J.Ident -> VarIdent
+toVarId (J.Ident id) = VarId id
+
+-- Specialise an 'J.Ident' into a function or method identifier ('FnIdent').
+toFnId :: J.Ident -> FnIdent
+toFnId (J.Ident id) = FnId id
+
+-- Specialise an 'J.Ident' into a named type identifier ('TypeIdent').
+toTypeId :: J.Ident -> TypeIdent
+toTypeId (J.Ident id) = ClsId id
+
+-- Convert a 'J.Type' into a 'Type'. Performs type specialisation on 'J.Named'
+-- types.
+castType :: J.Type -> Chk Type
+castType J.Int = return Int
+castType J.Double = return Double
+castType J.Boolean = return Boolean
+castType J.Void = return Void
+castType (J.Array typ) = Array <$> castType typ
+castType (J.Named id) = do
+  let typeId = toTypeId id
+  entry <- getDefKind typeId
+  case entry of
+    Just kind -> case kind of
+      ClsKind -> return $ Object typeId
+    Nothing -> throwError $ TypeNotFound typeId
+
+-- | Convert a list of 'J.Param's into a list of 'Param's. Performs type
+-- conversion in the process.
+castParam :: J.Param -> Chk Param
+castParam (J.Parameter typ id) = do
+  casted <- castType typ
+  return $ Parameter casted (toVarId id)
+
+-- | Convert an 'J.AddOp' into an 'AddOp'. This is a trivial type conversion.
+castAddOp :: J.AddOp -> AddOp
+castAddOp J.Plus = Plus
+castAddOp J.Minus = Minus
+
+-- | Convert a 'J.MulOp' into a 'MulOp'. This is a trivial type conversion.
+castMulOp :: J.MulOp -> MulOp
+castMulOp J.Times = Times
+castMulOp J.Div = Div
+castMulOp J.Mod = Mod
+
+-- | Convert a 'J.RelOp' into a 'RelOp'. This is a trivial type conversion.
+castRelOp :: J.RelOp -> RelOp
+castRelOp J.LTH = LTH
+castRelOp J.LE = LE
+castRelOp J.GTH = GTH
+castRelOp J.GE = GE
+castRelOp J.EQU = EQU
+castRelOp J.NE = NE
+
 -- * Context
 
 -- | The local context.
 data Context = Context
-  { -- | The variable context stack. The bottom layer contains global
-    -- declarations, including function definitions. Each statement block
-    -- introduces a new layer.
+  { -- | The variable context stack. Each statement block introduces a new
+    -- layer.
     vars :: ContextStack,
+    -- | The function context stack. Contains globally defined functions, as
+    -- well as methods of the current class hierarchy, if applicable.
+    fns :: FnContextStack,
     -- | Save whether the current function had a @return@ on the currently
     -- traversed code path.
-    returnState :: ReturnState,
+    retSt :: ReturnState,
     -- | The class definitions. Maps between class names and their context.
-    classes :: Map Ident ClassContext,
-    -- | The current class name
-    curClass :: Maybe Ident
+    clss :: Map TypeIdent ClassContext,
+    -- | The current class name.
+    curCls :: Maybe TypeIdent,
+    -- | The kind ('DefKind') of globally defined types. Needed for type
+    -- specialisation.
+    defKinds :: DefKinds
   }
-  deriving (Show, Eq)
+  deriving (Show)
 
 -- | The context of a class. Contains a mapping between names and types of
 -- instance variables and methods. Also contains name of superclass
-type ClassContext = (Ident, Maybe Ident, Map Ident Type)
+data ClassContext = ClsContext
+  { -- | The variable context stack. The bottom layer contains global
+    -- declarations, including function definitions. Each statement block
+    -- introduces a new layer.
+    clsName :: TypeIdent,
+    -- | Save whether the current function had a @return@ on the currently
+    -- traversed code path.
+    super :: Maybe TypeIdent,
+    -- | The class definitions. Maps between class names and their context.
+    meths :: Map FnIdent Type,
+    -- | The current class name.
+    instVars :: Map VarIdent Type
+  }
+  deriving (Show)
 
 -- | The context stack. Consists of individual variable contexts.
-type ContextStack = [Map Ident Type]
+type ContextStack = [Map VarIdent Type]
+
+-- | The function (and method) context stack. Consists of individual function
+-- contexts.
+type FnContextStack = [Map FnIdent Type]
 
 -- | A variable entry in the local context.
-type VarEntry = (Ident, Type)
+type VarEntry = (VarIdent, Type)
+
+-- | A variable entry in the local context.
+type FnEntry = (FnIdent, Type, [Type])
+
+-- | The 'DefKind's of globally defined named types.
+type DefKinds = Map TypeIdent DefKind
 
 -- | An empty context.
 emptyContext :: Context
 emptyContext =
   Context
-    { vars = [Map.empty],
-      returnState = NoReturn,
-      classes = Map.empty,
-      curClass = Nothing
+    { vars = [],
+      fns = [Map.empty],
+      retSt = NoReturn,
+      clss = Map.empty,
+      curCls = Nothing,
+      defKinds = Map.empty
     }
 
 -- | Context that contains the prelude functions of Javalette.
 preludeContext :: Context
 preludeContext =
-  insertVarEntry (Ident "printInt", Fn Void [Int]) $
-    insertVarEntry (Ident "printDouble", Fn Void [Double]) $
-      insertVarEntry (Ident "printString", Fn Void [String]) $
-        insertVarEntry (Ident "readInt", Fn Int []) $
-          insertVarEntry (Ident "readDouble", Fn Double []) emptyContext
+  emptyContext
+    { fns =
+        [ Map.insert "printInt" (Fn Void [Int]) $
+            Map.insert "printDouble" (Fn Void [Double]) $
+              Map.insert "printString" (Fn Void [String]) $
+                Map.insert "readInt" (Fn Int []) $
+                  Map.insert "readDouble" (Fn Double []) Map.empty
+        ]
+    }
 
 -- | Insert an entry into the top layer of the variable context stack.
-insertVarEntry :: VarEntry -> Context -> Context
-insertVarEntry (id, typ) ctx = ctx {vars = Map.insert id typ (head $ vars ctx) : tail (vars ctx)}
+insertVarEntry :: VarEntry -> Chk ()
+insertVarEntry (id, typ) = modify (\ctx -> ctx {vars = Map.insert id typ (head $ vars ctx) : tail (vars ctx)})
 
 -- | Look up whether an entry is present in the top layer of the variable
 -- context stack. Returns 'Just' with the entry if found, otherwise 'Nothing'.
-lookupVarEntry :: Ident -> Context -> Maybe Type
-lookupVarEntry id ctx = Map.lookup id (head $ vars ctx)
+lookupVarEntry :: VarIdent -> Chk (Maybe Type)
+lookupVarEntry id = gets $ \ctx -> Map.lookup id (head $ vars ctx)
 
 -- | Look up whether an entry is present in the top layer of the variable
 -- context stack.
-memberVarEntry :: Ident -> Context -> Bool
-memberVarEntry id ctx = Map.member id (head $ vars ctx)
+memberVarEntry :: VarIdent -> Chk Bool
+memberVarEntry id = gets $ \ctx -> Map.member id (head $ vars ctx)
 
--- | Insert an entry into the top of the context stack
+-- | Insert an variable entry into the top of the context stack
 extendContext :: VarEntry -> Chk ()
 extendContext (id, typ) = do
-  ctx <- get
-  if not $ memberVarEntry id ctx
-    then put $ insertVarEntry (id, typ) ctx
+  mem <- memberVarEntry id
+  if not mem
+    then insertVarEntry (id, typ)
     else throwError $ DuplicateVariable id
 
--- | Discard the top context of the context stack.
-discardTop :: Chk ()
-discardTop = modify (\ctx -> ctx {vars = tail $ vars ctx})
+-- | Discard the top context of the variable context stack.
+discardVarTop :: Chk ()
+discardVarTop = modify (\ctx -> ctx {vars = tail $ vars ctx})
 
--- | Add an empty context on top of the context stack.
-newTop :: Chk ()
-newTop = modify (\ctx -> ctx {vars = Map.empty : vars ctx})
+-- | Add an empty context on top of the variable context stack.
+newVarTop :: Chk ()
+newVarTop = modify (\ctx -> ctx {vars = Map.empty : vars ctx})
 
--- | Push the class contexts of a class hierarchy on top of the variable context
--- stack.
-pushClassTop :: Ident -> Bool -> Chk ()
-pushClassTop id isTop = do
-  ctx <- get
-  case fromJust $ Map.lookup id (classes ctx) of
-    (_, Nothing, mems) -> put $ ctx {vars = filterNonFns mems (not isTop) : vars ctx}
-    (_, Just super, mems) -> do
-      pushClassTop super False
-      put $ ctx {vars = filterNonFns mems (not isTop) : vars ctx}
-  where
-    filterNonFns :: Map Ident Type -> Bool -> Map Ident Type
-    filterNonFns elems doit =
-      if doit
-        then
-          Map.filter
-            ( \case
-                Fn ret args -> True
-                _ -> False
-            )
-            elems
-        else elems
-
--- | Search the context stack for a variable or function and return its type.
+-- | Search the context stack for a variable and return its type.
 -- Takes the first element that is discovered.
---
--- In case an lvalue contains an index, the type of the base variable is
--- searched for and the appropriate 'Array' type applied afterwards.
-lookupVar :: LValue -> Chk Type
-lookupVar lval = do
-  let id = unwrapLVal lval
+findVar :: VarIdent -> Chk Type
+findVar id = do
   ctx <- get
   case stackLookup id (vars ctx) of
-    Just typ -> return $ applyIndexing lval typ
+    Just typ -> return typ
     Nothing -> throwError $ UndeclaredVar id
   where
-    -- Get the identifier burried in an lvalue
-    unwrapLVal :: LValue -> Ident
-    unwrapLVal (ArrId lval _) = unwrapLVal lval
-    unwrapLVal (Id id) = id
-    -- Adapt the type of the identifier to the lvalue expressions applied to it.
-    applyIndexing :: LValue -> Type -> Type
-    applyIndexing (ArrId lval _) (Array typ) = applyIndexing lval typ
-    applyIndexing (Id _) typ = typ
-    stackLookup :: Ident -> ContextStack -> Maybe Type
+    stackLookup :: VarIdent -> ContextStack -> Maybe Type
     stackLookup id (top : rest) = case Map.lookup id top of
       Just typ -> Just typ
       Nothing -> stackLookup id rest
     stackLookup _id [] = Nothing
 
+-- | Insert an entry into the top layer of the function context stack.
+insertFnEntry :: FnEntry -> Chk ()
+insertFnEntry (id, ret, args) = modify (\ctx -> ctx {fns = Map.insert id (Fn ret args) (head $ fns ctx) : tail (fns ctx)})
+
+-- | Look up whether an entry is present in the top layer of the function
+-- context stack. Returns 'Just' with the entry if found, otherwise 'Nothing'.
+lookupFnEntry :: FnIdent -> Chk (Maybe Type)
+lookupFnEntry id = gets $ \ctx -> Map.lookup id (head $ fns ctx)
+
+-- | Look up whether an entry is present in the top layer of the function
+-- context stack.
+memberFnEntry :: FnIdent -> Chk Bool
+memberFnEntry id = gets $ \ctx -> Map.member id (head $ fns ctx)
+
+-- | Insert a function entry into the top of the context stack
+extendFnContext :: FnEntry -> Chk ()
+extendFnContext entry@(id, _, _) = do
+  mem <- memberFnEntry id
+  if not mem
+    then insertFnEntry entry
+    else throwError $ DuplicateFunction id
+
+-- | Discard the top context of the function context stack.
+discardFnTop :: Chk ()
+discardFnTop = modify (\ctx -> ctx {fns = tail $ fns ctx})
+
+-- | Add an empty context on top of the function context stack.
+newFnTop :: Chk ()
+newFnTop = modify (\ctx -> ctx {fns = Map.empty : fns ctx})
+
+-- | Search the botton layer of the function context stack for a globally
+-- defined function.
+findFn :: FnIdent -> Chk Type
+findFn id = do
+  entry <- gets $ \ctx -> Map.lookup id (last $ fns ctx)
+  case entry of
+    Just typ -> return typ
+    Nothing -> throwError $ FunctionNotFound id
+
+-- | Push the class contexts of a class hierarchy on top of the variable context
+-- stack.
+pushClassTop :: TypeIdent -> Bool -> Chk ()
+pushClassTop id isTop = do
+  ctx <- get
+  let cls = fromJust $ Map.lookup id (clss ctx)
+  case super cls of
+    Nothing -> do
+      put $ ctx {fns = meths cls : fns ctx}
+      when isTop $ put $ ctx {vars = instVars cls : vars ctx}
+    Just super -> do
+      pushClassTop super False
+      when isTop $ put $ ctx {vars = instVars cls : vars ctx}
+
+-- | Remove class members from the context stacks. Discards the variable context
+-- stack and all but the bottom layer of the function context stack.
+discardClassTop :: Chk ()
+discardClassTop = do
+  modify (\ctx -> ctx {fns = [last $ fns ctx]})
+  modify (\ctx -> ctx {vars = []})
+
 -- | Insert a class entry into the context.
-insertClassEntry :: ClassContext -> Context -> Context
-insertClassEntry cls@(id, _, _) ctx = ctx {classes = Map.insert id cls (classes ctx)}
+insertClassEntry :: ClassContext -> Chk ()
+insertClassEntry cls = modify (\ctx -> ctx {clss = Map.insert (clsName cls) cls (clss ctx)})
 
 -- | Search for a class entry in the context. Returns 'Just' with the entry if
 -- found or 'Nothing' otherwise.
-lookupClassEntry :: Ident -> Context -> Maybe ClassContext
-lookupClassEntry id ctx = Map.lookup id (classes ctx)
+lookupClassEntry :: TypeIdent -> Chk (Maybe ClassContext)
+lookupClassEntry id = gets $ \ctx -> Map.lookup id (clss ctx)
 
 -- | Search for a class entry in the context and return whether it is present.
-memberClassEntry :: Ident -> Context -> Bool
-memberClassEntry id ctx = Map.member id (classes ctx)
+memberClassEntry :: TypeIdent -> Chk Bool
+memberClassEntry id = gets $ \ctx -> Map.member id (clss ctx)
 
 -- | Set the current class name.
-enterClass :: Ident -> Chk ()
-enterClass id = modify (\ctx -> ctx {curClass = Just id})
+enterClass :: TypeIdent -> Chk ()
+enterClass id = modify (\ctx -> ctx {curCls = Just id})
 
 -- | Clear the current class name.
 leaveClass :: Chk ()
-leaveClass = modify (\ctx -> ctx {curClass = Nothing})
+leaveClass = modify (\ctx -> ctx {curCls = Nothing})
 
 -- | Get the name of the class the current code is written in.
-getCurrentClassName :: Chk (Maybe Ident)
-getCurrentClassName = gets curClass
+getCurrentClassName :: Chk (Maybe TypeIdent)
+getCurrentClassName = gets curCls
 
 -- | Get the name of the super class of a class. Returns a 'Just' with the name
 -- of the super class if it has one or 'Nothing' otherwise. Returns a
 -- 'TypeError' if the base class does not exist.
-getSuperClassName :: Ident -> Chk (Maybe Ident)
+getSuperClassName :: TypeIdent -> Chk (Maybe TypeIdent)
 getSuperClassName id = do
   ctx <- get
-  case Map.lookup id (classes ctx) of
-    Just (_, super, _) -> return super
+  case Map.lookup id (clss ctx) of
+    Just cls -> return $ super cls
     Nothing -> throwError $ ClassNotFound id
 
 -- | Search the registered classes for the class name. Returns the corresponding
 -- 'Object' type if the class exists. Throws a 'TypeError' otherwise.
-lookupClass :: Ident -> Chk Type
+lookupClass :: TypeIdent -> Chk Type
 lookupClass id = do
   ctx <- get
-  if Map.member id (classes ctx)
+  if Map.member id (clss ctx)
     then return $ Object id
     else throwError $ ClassNotFound id
 
 -- | Search for a method in a class and all its super classes. Returns the
 -- corresponding function type if the method exists. Throws a 'TypeError'
 -- otherwise.
-lookupMethod :: Ident -> Ident -> Chk Type
-lookupMethod id cls = do
+lookupMethod :: FnIdent -> TypeIdent -> Chk Type
+lookupMethod id clsId = do
   ctx <- get
-  case Map.lookup cls (classes ctx) of
-    Just (name, super, mems) ->
-      case Map.lookup id mems of
+  case Map.lookup clsId (clss ctx) of
+    Just cls ->
+      case Map.lookup id (meths cls) of
         Just typ -> return typ
         Nothing ->
-          case super of
+          case super cls of
             Just superId -> lookupMethod id superId
             Nothing -> throwError $ MethodNotFound id
-    Nothing -> throwError $ ClassNotFound id
+    Nothing -> throwError $ ClassNotFound clsId
+
+-- | Set the kind of all top-level type definitions.
+setDefKinds :: DefKinds -> Chk ()
+setDefKinds defs = modify (\ctx -> ctx {defKinds = defs})
+
+-- | Get the kind of a top-level type definition.
+getDefKind :: TypeIdent -> Chk (Maybe DefKind)
+getDefKind id = gets $ \ctx -> Map.lookup id (defKinds ctx)
 
 -- * Return State
 
@@ -751,18 +917,18 @@ checkReturnState = do
 
 -- | Get the current 'ReturnState' from the context.
 getReturnState :: Chk ReturnState
-getReturnState = gets returnState
+getReturnState = gets retSt
 
 -- | Set the current 'ReturnState' in the context. Uses '(<>)' to merge the
 -- present return state with the new one.
 setReturnState :: ReturnState -> Chk ()
-setReturnState state = modify (\ctx -> ctx {returnState = returnState ctx <> state})
+setReturnState state = modify (\ctx -> ctx {retSt = retSt ctx <> state})
 
 -- | Set the current 'ReturnState' in the context. Overrides the present return
 -- state.
 overrideReturnState :: ReturnState -> Chk ()
-overrideReturnState state = modify (\ctx -> ctx {returnState = state})
+overrideReturnState state = modify (\ctx -> ctx {retSt = state})
 
 -- | Reset the current 'ReturnState' in the context to 'NoReturn'.
 resetReturnState :: Chk ()
-resetReturnState = modify (\ctx -> ctx {returnState = NoReturn})
+resetReturnState = modify (\ctx -> ctx {retSt = NoReturn})
