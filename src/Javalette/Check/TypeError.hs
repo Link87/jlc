@@ -30,6 +30,7 @@ data TypeError
   | TypeMismatchOverloaded Type [Type]
   | ExpectedFnType Type
   | ExpectedArrType Type
+  | ExpectedStrPtrType Type
   | ExpectedObjType Type
   | ExpectedLValue J.Expr
   | ArgumentMismatch
@@ -41,8 +42,10 @@ data TypeError
   | UndeclaredVar VarIdent
   | FunctionNotFound FnIdent
   | TypeNotFound TypeIdent
+  | StructNotFound TypeIdent
   | ClassNotFound TypeIdent
   | MethodNotFound FnIdent
+  | InvalidAlias TypeIdent
   | UnknownProperty VarIdent
   | InvalidAccessor J.Expr
   | MainNotFound
@@ -76,6 +79,8 @@ instance Show TypeError where
     showString "Type Mismatch: Expected an array but got " . shows got . showString "."
   showsPrec _ (ExpectedObjType got) =
     showString "Type Mismatch: Expected an object but got " . shows got . showString "."
+  showsPrec _ (ExpectedStrPtrType got) =
+    showString "Type Mismatch: Expected a pointer to a struct but got " . shows got . showString "."
   showsPrec _ (ExpectedLValue expr) =
     showString "Expected an lvalue but got expression " . shows expr . showString "."
   showsPrec _ ArgumentMismatch =
@@ -96,10 +101,14 @@ instance Show TypeError where
     showString "Function definition not found for function " . shows id . showString "."
   showsPrec _ (TypeNotFound id) =
     showString "Declaration for type " . shows id . showString " not found."
+  showsPrec _ (StructNotFound id) =
+    showString "Struct definition not found for struct " . shows id . showString "."
   showsPrec _ (ClassNotFound id) =
     showString "Class definition not found for class " . shows id . showString "."
   showsPrec _ (MethodNotFound id) =
     showString "Method definition not found for method " . shows id . showString "."
+  showsPrec _ (InvalidAlias id) =
+    showString "Type alias " . shows id . showString " does not alias a known type."
   showsPrec _ (UnknownProperty id) =
     showString "Property " . shows id . showString " not found."
   showsPrec _ (InvalidAccessor expr) =

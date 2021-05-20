@@ -39,7 +39,7 @@ import Data.Foldable (foldrM)
 import Data.List (find)
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Maybe (fromJust)
+import Data.Maybe (catMaybes, fromJust)
 import Debug.Trace
 import Javalette.Check.Return (ReturnState (..), both)
 import Javalette.Check.TypeError (TypeError (..), TypeResult (..), pattern Err, pattern Ok)
@@ -59,6 +59,7 @@ check prog@(J.Program tds) = do
   runChk preludeContext $ do
     -- Second pass: save fns and classes. Also check for main function.
     setDefKinds defs
+    mapM_ saveAlias tds
     mapM_ saveTopDef tds
     main <- lookupFnEntry "main"
     case main of
@@ -72,7 +73,7 @@ check prog@(J.Program tds) = do
 -- * Collecting global identifiers (first pass)
 
 -- | The kinds of definitions that can occur on the top-level.
-data DefKind = ClsKind
+data DefKind = StrKind | AliasKind | ClsKind
   deriving (Show, Eq)
 
 -- | Collect the names and according 'DefKind's of top-level definitions. Throws
@@ -89,8 +90,12 @@ collectGlobIds (J.Program tds) = foldrM insertDef Map.empty tds
       | Map.notMember (topDefId td) defs = return $ Map.insert (topDefId td) (topDefKind td) defs
       | otherwise = Err $ DuplicateDefinition (topDefId td)
     topDefId (J.FnDef _ id _ _) = toTypeId id
+    topDefId (J.StrDef id _) = toTypeId id
+    topDefId (J.TypeDef _ id) = toTypeId id
     topDefId (J.ClsDef id _) = toTypeId id
     topDefId (J.SubClsDef id _ _) = toTypeId id
+    topDefKind J.StrDef {} = StrKind
+    topDefKind J.TypeDef {} = AliasKind
     topDefKind J.ClsDef {} = ClsKind
     topDefKind J.SubClsDef {} = ClsKind
 
@@ -111,13 +116,36 @@ newtype Chk a = MkChk (StateT Context (ExceptT TypeError Identity) a)
 runChk :: Context -> Chk AnnotatedProg -> TypeResult AnnotatedProg
 runChk ctx (MkChk rd) = runIdentity $ runExceptT $ evalStateT rd ctx
 
+-- | Save 'TypeDef' type aliases into the current 'Context'.
+saveAlias :: J.TopDef -> Chk ()
+saveAlias (J.TypeDef id alias) = do
+  aliased <- Ptr <$> castType (J.Named id)
+  addTypeAlias (toTypeId alias) aliased
+saveAlias _ = return ()
+
 -- | Save a 'TopDef' into the current 'Context'.
+--
+-- Type aliases need to be handled beforehand.
 saveTopDef :: J.TopDef -> Chk ()
 saveTopDef (J.FnDef ret id params _blk) = do
   let fnId = toFnId id
   castedRet <- castType ret
   castedArgs <- paramTypes params
   extendFnContext (toFnId id, castedRet, castedArgs)
+saveTopDef (J.StrDef id flds) = do
+  entries <-
+    mapM
+      ( \(J.StrFld typ id) -> do
+          casted <- castType typ
+          return (toVarId id, casted)
+      )
+      flds
+  insertStructEntry $
+    StrContext
+      { strName = toTypeId id,
+        fields = Map.fromList entries
+      }
+saveTopDef (J.TypeDef id alias) = return ()
 saveTopDef (J.ClsDef id elems) = do
   let clsId = toTypeId id
   meths <- createMethodEntries elems clsId
@@ -171,11 +199,13 @@ createInstVarEntries (J.MethDef {} : rest) clsId = createInstVarEntries rest cls
 -- | Typecheck the program. Main function for the third pass.
 -- Functions and classes have to be present in context from previous passes.
 checkProgram :: J.Prog -> Chk AnnotatedProg
-checkProgram (J.Program tds) = Program <$> mapM checkTopDef tds
+checkProgram (J.Program tds) = Program . catMaybes <$> mapM checkTopDef tds
 
 -- | Typecheck a function's or class' body. Returns the input augmented with
 -- type annotations if succesful or throws a 'TypeError' otherwise.
-checkTopDef :: J.TopDef -> Chk TopDef
+--
+-- Returns 'Nothing' if the 'TopDef' is stripped away, e.g 'TypeDef's
+checkTopDef :: J.TopDef -> Chk (Maybe TopDef)
 checkTopDef (J.FnDef ret id params (J.Block stmts)) = do
   castedRet <- castType ret
   castedArgs <- mapM castParam params
@@ -186,7 +216,11 @@ checkTopDef (J.FnDef ret id params (J.Block stmts)) = do
   checkReturnState
   resetReturnState
   discardVarTop
-  return $ FnDef castedRet (toFnId id) castedArgs (Block annotated)
+  return $ Just $ FnDef castedRet (toFnId id) castedArgs (Block annotated)
+checkTopDef (J.StrDef id flds) = do
+  entries <- mapM checkStrItem flds
+  return $ Just $ StrDef (toTypeId id) entries
+checkTopDef (J.TypeDef _ _) = return Nothing
 checkTopDef (J.ClsDef id elems) = do
   let clsId = toTypeId id
   pushClassTop clsId True
@@ -194,8 +228,15 @@ checkTopDef (J.ClsDef id elems) = do
   annotated <- mapM checkClassItem elems
   discardClassTop
   leaveClass
-  createClassDescriptor clsId annotated
+  Just <$> createClassDescriptor clsId annotated
 checkTopDef (J.SubClsDef id _ elems) = checkTopDef $ J.ClsDef id elems
+
+-- | Typecheck a struct field. Returns the input augmented with
+-- type annotations if succesful or throws a 'TypeError' otherwise.
+checkStrItem :: J.StrItem -> Chk StrItem
+checkStrItem (J.StrFld typ id) = do
+  casted <- castType typ
+  return $ StrFld casted (toVarId id)
 
 -- | Typecheck a declaration inside a class. Returns the input augmented with
 -- type annotations if succesful or throws a 'TypeError' otherwise.
@@ -380,9 +421,15 @@ inferExpr (J.ELitDouble doub) = return $ ELitDouble doub
 inferExpr J.ELitTrue = return ELitTrue
 inferExpr J.ELitFalse = return ELitFalse
 inferExpr (J.ENull id) = do
-  let clsId = toTypeId id
-  typ <- lookupClass clsId
-  return $ ENull clsId typ
+  casted <- castType $ J.Named id
+  case casted of
+    Ptr (Struct strId) -> do
+      typ <- Ptr <$> lookupStruct strId
+      return $ ENull strId typ
+    Object clsId -> do
+      typ <- lookupClass clsId
+      return $ ENull clsId typ
+    _ -> throwError $ ExpectedObjType casted
 inferExpr (J.ECall id exprs) = do
   let fnId = toFnId id
   typ <- findFn fnId
@@ -396,6 +443,7 @@ inferExpr (J.ENew typ sizes) = do
   case sizes of
     [] ->
       case casted of
+        Struct strId -> return $ EStrInit casted
         Object clsId -> return $ EObjInit casted
         _ -> throwError $ ExpectedObjType casted
     _ -> do
@@ -420,14 +468,21 @@ inferExpr (J.EDot expr (J.ECall id args)) = do
   let fnId = toFnId id
   annotatedObj <- inferExpr expr
   case getType annotatedObj of
-    (Object cls) -> do
-      typ <- lookupMethod fnId cls
+    (Object clsId) -> do
+      (ownerId, typ) <- lookupMethod fnId clsId
       annotatedArgs <- checkFnArgs args typ True
-      -- only type with return type of function, not with function type itself
       case typ of
-        (Fn ret _) -> return $ EMethCall annotatedObj fnId annotatedArgs ret
+        (Fn ret _) -> return $ EMethCall annotatedObj ownerId fnId annotatedArgs typ ret
     typ -> throwError $ ExpectedObjType typ
 inferExpr (J.EDot _ expr) = throwError $ InvalidAccessor expr
+inferExpr (J.EDeref expr id) = do
+  let fldId = toVarId id
+  annotated <- inferExpr expr
+  case getType annotated of
+    Ptr (Struct strId) -> do
+      typ <- lookupStrField strId fldId
+      return $ EDeref annotated fldId typ
+    typ -> throwError $ ExpectedStrPtrType typ
 inferExpr (J.ENeg expr) = do
   annotated <- inferUn expr [Int, Double]
   return $ ENeg annotated (getType annotated)
@@ -444,9 +499,15 @@ inferExpr (J.EAdd expr1 op expr2) = do
   return $ EAdd annotated1 (castAddOp op) annotated2 (getType annotated1)
 inferExpr (J.ERel expr1 op expr2) = do
   catchError
-    ( do
-        (annotated1, annotated2) <- inferBinObj expr1 expr2
-        return $ ERel annotated1 relOp annotated2
+    ( catchError
+        ( do
+            (annotated1, annotated2) <- inferBinStr expr1 expr2
+            return $ ERel annotated1 relOp annotated2
+        )
+        ( \_ -> do
+            (annotated1, annotated2) <- inferBinObj expr1 expr2
+            return $ ERel annotated1 relOp annotated2
+        )
     )
     ( \_ -> do
         (annotated1, annotated2) <- inferBin expr1 expr2 exprType
@@ -462,12 +523,10 @@ inferExpr (J.EOr expr1 expr2) = do
   (annotated1, annotated2) <- inferBin expr1 expr2 [Boolean]
   return $ EOr annotated1 annotated2
 
--- inferExpr expr = error $ "Don't know how to handle expression " ++ show expr
-
 -- | Infer the type for an unary expression and return the expression augmented
 -- with type information. The inferred type has to be one of the given types.
--- Otherwise, a 'TypeError' is thrown. 'Array' and 'Object' types are matched
--- exactly.
+-- Otherwise, a 'TypeError' is thrown. 'Array', 'Struct' and 'Object' types are
+-- matched exactly.
 inferUn :: J.Expr -> [Type] -> Chk TExpr
 inferUn expr types = do
   annotated <- inferExpr expr
@@ -491,6 +550,19 @@ inferBin expr1 expr2 types = do
     else throwError $ TypeMismatchOverloaded inferred types
 
 -- | Infer the type for a binary expression and return both augmented with type
+-- information each. Both subexpressions have to evaluate to pointers to the
+-- same struct. Otherwise, a 'TypeError' is thrown.
+inferBinStr :: J.Expr -> J.Expr -> Chk (TExpr, TExpr)
+inferBinStr expr1 expr2 = do
+  annotated1 <- inferExpr expr1
+  let inferred = getType annotated1
+  case inferred of
+    Ptr (Struct _) -> do
+      annotated2 <- checkExpr expr2 inferred
+      return (annotated1, annotated2)
+    _ -> throwError $ ExpectedStrPtrType inferred
+
+-- | Infer the type for a binary expression and return both augmented with type
 -- information each. Both subexpressions have to be objects and be of the same
 -- type or one has to be a subtype of the other. Otherwise, a 'TypeError' is
 -- thrown.
@@ -499,7 +571,7 @@ inferBinObj expr1 expr2 = do
   annotated1 <- inferExpr expr1
   let inferred = getType annotated1
   case inferred of
-    Object cls -> do
+    Object _ -> do
       annotated2 <- checkExpr expr2 inferred
       return (annotated1, annotated2)
     _ -> throwError $ ExpectedObjType inferred
@@ -532,6 +604,15 @@ coerceLVal (J.EArrIndex expr1 expr2) = do
   annotated <- checkExpr expr2 Int
   case getLValType lval of
     Array typ -> return $ ArrVal lval annotated typ
+    typ -> throwError $ ExpectedArrType typ
+coerceLVal (J.EDeref expr id) = do
+  let fldId = toVarId id
+  lval <- coerceLVal expr
+  case getLValType lval of
+    Ptr (Struct strId) -> do
+      typ <- lookupStrField strId fldId
+      return $ DerefVal lval fldId typ
+    typ -> throwError $ ExpectedStrPtrType typ
 coerceLVal expr = throwError $ ExpectedLValue expr
 
 -- | Save the function arguments in the variable context stack top layer.
@@ -606,7 +687,7 @@ toFnId (J.Ident id) = FnId id
 
 -- Specialise an 'J.Ident' into a named type identifier ('TypeIdent').
 toTypeId :: J.Ident -> TypeIdent
-toTypeId (J.Ident id) = ClsId id
+toTypeId (J.Ident id) = TyId id
 
 -- Convert a 'J.Type' into a 'Type'. Performs type specialisation on 'J.Named'
 -- types.
@@ -621,6 +702,12 @@ castType (J.Named id) = do
   entry <- getDefKind typeId
   case entry of
     Just kind -> case kind of
+      StrKind -> return $ Struct typeId
+      AliasKind -> do
+        alias <- getTypeAlias typeId
+        case alias of
+          Just typ -> return typ
+          Nothing -> throwError $ InvalidAlias typeId
       ClsKind -> return $ Object typeId
     Nothing -> throwError $ TypeNotFound typeId
 
@@ -664,29 +751,40 @@ data Context = Context
     -- | Save whether the current function had a @return@ on the currently
     -- traversed code path.
     retSt :: ReturnState,
-    -- | The class definitions. Maps between class names and their context.
+    -- | The struct definitions. Maps between struct names and the corresponding
+    -- context.
+    strs :: Map TypeIdent StructContext,
+    -- | The class definitions. Maps between class names and the corresponding
+    -- context.
     clss :: Map TypeIdent ClassContext,
     -- | The current class name.
     curCls :: Maybe TypeIdent,
     -- | The kind ('DefKind') of globally defined types. Needed for type
     -- specialisation.
-    defKinds :: DefKinds
+    defKinds :: DefKinds,
+    -- | The type aliases. Maps between a type identifier and the assigned type.
+    aliases :: Map TypeIdent Type
+  }
+  deriving (Show)
+
+data StructContext = StrContext
+  { -- | The name of the struct.
+    strName :: TypeIdent,
+    -- | The fields of the struct.
+    fields :: Map VarIdent Type
   }
   deriving (Show)
 
 -- | The context of a class. Contains a mapping between names and types of
 -- instance variables and methods. Also contains name of superclass
 data ClassContext = ClsContext
-  { -- | The variable context stack. The bottom layer contains global
-    -- declarations, including function definitions. Each statement block
-    -- introduces a new layer.
+  { -- | The name of the class.
     clsName :: TypeIdent,
-    -- | Save whether the current function had a @return@ on the currently
-    -- traversed code path.
+    -- | The name of the super class, if present.
     super :: Maybe TypeIdent,
-    -- | The class definitions. Maps between class names and their context.
+    -- | The methods of the class.
     meths :: Map FnIdent Type,
-    -- | The current class name.
+    -- | The instance variables of the class.
     instVars :: Map VarIdent Type
   }
   deriving (Show)
@@ -714,9 +812,11 @@ emptyContext =
     { vars = [],
       fns = [Map.empty],
       retSt = NoReturn,
+      strs = Map.empty,
       clss = Map.empty,
       curCls = Nothing,
-      defKinds = Map.empty
+      defKinds = Map.empty,
+      aliases = Map.empty
     }
 
 -- | Context that contains the prelude functions of Javalette.
@@ -739,12 +839,12 @@ insertVarEntry (id, typ) = modify (\ctx -> ctx {vars = Map.insert id typ (head $
 -- | Look up whether an entry is present in the top layer of the variable
 -- context stack. Returns 'Just' with the entry if found, otherwise 'Nothing'.
 lookupVarEntry :: VarIdent -> Chk (Maybe Type)
-lookupVarEntry id = gets $ \ctx -> Map.lookup id (head $ vars ctx)
+lookupVarEntry id = gets $ Map.lookup id . head . vars
 
 -- | Look up whether an entry is present in the top layer of the variable
 -- context stack.
 memberVarEntry :: VarIdent -> Chk Bool
-memberVarEntry id = gets $ \ctx -> Map.member id (head $ vars ctx)
+memberVarEntry id = gets $ Map.member id . head . vars
 
 -- | Insert an variable entry into the top of the context stack
 extendContext :: VarEntry -> Chk ()
@@ -784,12 +884,12 @@ insertFnEntry (id, ret, args) = modify (\ctx -> ctx {fns = Map.insert id (Fn ret
 -- | Look up whether an entry is present in the top layer of the function
 -- context stack. Returns 'Just' with the entry if found, otherwise 'Nothing'.
 lookupFnEntry :: FnIdent -> Chk (Maybe Type)
-lookupFnEntry id = gets $ \ctx -> Map.lookup id (head $ fns ctx)
+lookupFnEntry id = gets $ Map.lookup id . head . fns
 
 -- | Look up whether an entry is present in the top layer of the function
 -- context stack.
 memberFnEntry :: FnIdent -> Chk Bool
-memberFnEntry id = gets $ \ctx -> Map.member id (head $ fns ctx)
+memberFnEntry id = gets $ Map.member id . head . fns
 
 -- | Insert a function entry into the top of the context stack
 extendFnContext :: FnEntry -> Chk ()
@@ -811,10 +911,42 @@ newFnTop = modify (\ctx -> ctx {fns = Map.empty : fns ctx})
 -- defined function.
 findFn :: FnIdent -> Chk Type
 findFn id = do
-  entry <- gets $ \ctx -> Map.lookup id (last $ fns ctx)
+  entry <- gets $ Map.lookup id . last . fns
   case entry of
     Just typ -> return typ
     Nothing -> throwError $ FunctionNotFound id
+
+-- | Insert a struct entry into the context.
+insertStructEntry :: StructContext -> Chk ()
+insertStructEntry str = modify (\ctx -> ctx {strs = Map.insert (strName str) str (strs ctx)})
+
+-- | Search for a struct entry in the context. Returns 'Just' with the entry if
+-- found or 'Nothing' otherwise.
+lookupStructEntry :: TypeIdent -> Chk (Maybe StructContext)
+lookupStructEntry id = gets $ Map.lookup id . strs
+
+-- | Search for a struct entry in the context and return whether it is present.
+memberStructEntry :: TypeIdent -> Chk Bool
+memberStructEntry id = gets $ Map.member id . strs
+
+-- | Search the registered structs for the struct name. Returns the
+-- corresponding 'Struct' type if the struct exists. Throws a 'TypeError'
+-- otherwise.
+lookupStruct :: TypeIdent -> Chk Type
+lookupStruct id = do
+  ctx <- get
+  if Map.member id (strs ctx)
+    then return $ Struct id
+    else throwError $ StructNotFound id
+
+-- | Search for a struct field in a struct. Returns the field's type if it
+-- exists. Throws a 'TypeError' otherwise.
+lookupStrField :: TypeIdent -> VarIdent -> Chk Type
+lookupStrField strId varId = do
+  str <- gets $ fromJust . Map.lookup strId . strs
+  case Map.lookup varId (fields str) of
+    Just typ -> return typ
+    Nothing -> throwError $ UndeclaredVar varId
 
 -- | Push the class contexts of a class hierarchy on top of the variable context
 -- stack.
@@ -844,11 +976,11 @@ insertClassEntry cls = modify (\ctx -> ctx {clss = Map.insert (clsName cls) cls 
 -- | Search for a class entry in the context. Returns 'Just' with the entry if
 -- found or 'Nothing' otherwise.
 lookupClassEntry :: TypeIdent -> Chk (Maybe ClassContext)
-lookupClassEntry id = gets $ \ctx -> Map.lookup id (clss ctx)
+lookupClassEntry id = gets $ Map.lookup id . clss
 
 -- | Search for a class entry in the context and return whether it is present.
 memberClassEntry :: TypeIdent -> Chk Bool
-memberClassEntry id = gets $ \ctx -> Map.member id (clss ctx)
+memberClassEntry id = gets $ Map.member id . clss
 
 -- | Set the current class name.
 enterClass :: TypeIdent -> Chk ()
@@ -882,15 +1014,15 @@ lookupClass id = do
     else throwError $ ClassNotFound id
 
 -- | Search for a method in a class and all its super classes. Returns the
--- corresponding function type if the method exists. Throws a 'TypeError'
--- otherwise.
-lookupMethod :: FnIdent -> TypeIdent -> Chk Type
+-- corresponding owning class and function type if the method exists. Throws a
+--'TypeError' otherwise.
+lookupMethod :: FnIdent -> TypeIdent -> Chk (TypeIdent, Type)
 lookupMethod id clsId = do
   ctx <- get
   case Map.lookup clsId (clss ctx) of
     Just cls ->
       case Map.lookup id (meths cls) of
-        Just typ -> return typ
+        Just typ -> return (clsId, typ)
         Nothing ->
           case super cls of
             Just superId -> lookupMethod id superId
@@ -903,7 +1035,15 @@ setDefKinds defs = modify (\ctx -> ctx {defKinds = defs})
 
 -- | Get the kind of a top-level type definition.
 getDefKind :: TypeIdent -> Chk (Maybe DefKind)
-getDefKind id = gets $ \ctx -> Map.lookup id (defKinds ctx)
+getDefKind id = gets $ Map.lookup id . defKinds
+
+-- | Add a type alias to the context.
+addTypeAlias :: TypeIdent -> Type -> Chk ()
+addTypeAlias id typ = modify (\ctx -> ctx {aliases = Map.insert id typ (aliases ctx)})
+
+-- | Get the type assigned to a type alias identifier.
+getTypeAlias :: TypeIdent -> Chk (Maybe Type)
+getTypeAlias id = gets $ Map.lookup id . aliases
 
 -- * Return State
 

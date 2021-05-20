@@ -133,7 +133,6 @@ generateInstructionCode (PtrToInt id typ1 val typ2) =
     <> typeId typ1
     <> B.singleton ' '
     <> valueRepr val
-    <> B.singleton ' '
     <> " to "
     <> typeId typ2
 generateInstructionCode (Bitcast id typ1 val typ2) =

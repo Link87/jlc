@@ -6,9 +6,13 @@ Program.    Prog ::= [TopDef] ;
 
 FnDef.	    TopDef ::= Type Ident "(" [Param] ")" Blk ;
 
+StrDef.     TopDef ::= "struct" Ident "{" [StrItem] "}" ";" ;
+
 ClsDef.	    TopDef ::= "class" Ident "{" [ClsItem] "}" ;
 
 SubClsDef.  TopDef ::= "class" Ident "extends" Ident "{" [ClsItem] "}" ;
+
+TypeDef.    TopDef ::= "typedef" "struct" Ident "*" Ident ";" ;
 
 separator nonempty TopDef "" ;
 
@@ -21,6 +25,10 @@ InstVar.    ClsItem ::= Type Ident ";" ;
 MethDef.    ClsItem ::= Type Ident "(" [Param] ")" Blk ;
 
 separator   ClsItem "" ;
+
+StrFld.   StrItem ::= Type Ident ";" ;
+
+separator   StrItem "" ;
 
 -- statements ----------------------------------------------
 
@@ -103,6 +111,8 @@ separator   SizeItem "" ;
 EArrIndex.  Expr8 ::= Expr8 "[" Expr "]" ;
 
 EDot.       Expr7 ::= Expr7 "." Expr8 ;
+
+EDeref.     Expr6 ::= Expr6 "->" Ident ;
 
 ENeg.       Expr5 ::= "-" Expr6 ;
 

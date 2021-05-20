@@ -70,7 +70,7 @@ ifeq ($(OS),Windows_NT)
 endif
 
 test: $(GENERATED) $(TAR_NAME)
-	cd test && python3 testing.py ../$(TAR_NAME) --llvm -x arrays1 arrays2 objects1 objects2
+	cd test && python3 testing.py ../$(TAR_NAME) --llvm -x arrays1 arrays2 objects1 objects2 pointers
 
 test-tc: $(GENERATED) $(TAR_NAME)
 	cd test && python3 testing.py ../$(TAR_NAME)

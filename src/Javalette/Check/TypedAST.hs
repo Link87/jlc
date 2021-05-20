@@ -19,11 +19,16 @@ newtype TypedProg = Program [TopDef]
 -- | A top-level definition.
 data TopDef
   = FnDef Type FnIdent [Param] Blk
+  | StrDef TypeIdent [StrItem]
   | ClsDef TypeIdent [ClsItem] [ClsVar] [ClsMeth]
   deriving (Show)
 
 -- | A function parameter.
 data Param = Parameter Type VarIdent
+  deriving (Show)
+
+-- | A Struct field.
+data StrItem = StrFld Type VarIdent
   deriving (Show)
 
 -- | A class member.
@@ -65,7 +70,10 @@ data DeclItem = NoInit VarIdent | Init VarIdent TExpr
 
 -- | An lvalue, i.e. a special kind of expression that a value can be assigned
 -- to.
-data LValue = ArrVal LValue TExpr Type | VarVal VarIdent Type
+data LValue
+  = VarVal VarIdent Type
+  | ArrVal LValue TExpr Type
+  | DerefVal LValue VarIdent Type
   deriving (Show)
 
 -- | A type in Javalette.
@@ -76,8 +84,8 @@ data Type
   | String
   | Void
   | Array Type
-  | Object TypeIdent
   | Struct TypeIdent
+  | Object TypeIdent
   | Ptr Type
   | Fn Type [Type]
   deriving (Eq)
@@ -101,10 +109,9 @@ data TExpr
   | ELitDouble Double
   | ELitTrue
   | ELitFalse
+  | EString String
   | ENull TypeIdent Type
   | ECall FnIdent [TExpr] Type
-  | EString String
-  | EArrIndex TExpr TExpr Type
   | ENeg TExpr Type
   | ENot TExpr
   | EMul TExpr MulOp TExpr Type
@@ -112,10 +119,13 @@ data TExpr
   | ERel TExpr RelOp TExpr
   | EAnd TExpr TExpr
   | EOr TExpr TExpr
-  | EObjInit Type
   | EArrAlloc Type [SizeItem] Type
-  | EMethCall TExpr FnIdent [TExpr] Type
   | EArrLen TExpr
+  | EArrIndex TExpr TExpr Type
+  | EStrInit Type
+  | EDeref TExpr VarIdent Type
+  | EObjInit Type
+  | EMethCall TExpr TypeIdent FnIdent [TExpr] Type Type
   deriving (Show)
 
 -- | A size specification in the declaration of an array
@@ -139,14 +149,14 @@ class Ident t where
   ident :: t -> Text
 
 -- | An identifier that belongs to a named type.
-newtype TypeIdent = ClsId Text
+newtype TypeIdent = TyId Text
   deriving (Eq, Ord, Data.String.IsString)
 
 instance Ident TypeIdent where
-  ident (ClsId id) = id
+  ident (TyId id) = id
 
 instance Show TypeIdent where
-  show (ClsId id) = T.unpack id
+  show (TyId id) = T.unpack id
 
 -- | An identifier that belongs to a function or method.
 newtype FnIdent = FnId Text
@@ -175,10 +185,9 @@ getType ELitInt {} = Int
 getType ELitDouble {} = Double
 getType ELitTrue = Boolean
 getType ELitFalse = Boolean
+getType EString {} = String
 getType (ENull _ typ) = typ
 getType (ECall _ _ typ) = typ
-getType EString {} = String
-getType (EArrIndex _ _ typ) = typ
 getType (ENeg _ typ) = typ
 getType ENot {} = Boolean
 getType (EMul _ _ _ typ) = typ
@@ -186,12 +195,16 @@ getType (EAdd _ _ _ typ) = typ
 getType ERel {} = Boolean
 getType EAnd {} = Boolean
 getType EOr {} = Boolean
-getType (EObjInit typ) = typ
 getType (EArrAlloc _ _ typ) = typ
-getType (EMethCall _ _ _ typ) = typ
 getType EArrLen {} = Int
+getType (EArrIndex _ _ typ) = typ
+getType (EStrInit typ) = Ptr typ
+getType (EDeref _ _ typ) = typ
+getType (EObjInit typ) = typ
+getType (EMethCall _ _ _ _ _ typ) = typ
 
 -- | Obtain the type of an lvalue.
 getLValType :: LValue -> Type
 getLValType (ArrVal _ _ typ) = typ
+getLValType (DerefVal _ _ typ) = typ
 getLValType (VarVal _ typ) = typ
