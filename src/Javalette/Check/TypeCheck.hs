@@ -1,5 +1,4 @@
 {-# LANGUAGE GeneralisedNewtypeDeriving #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE Trustworthy #-}
@@ -42,9 +41,8 @@ import qualified Data.Map as Map
 import Data.Maybe (catMaybes, fromJust)
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Debug.Trace
 import Javalette.Check.Return (ReturnState (..), both)
-import Javalette.Check.TypeError (TypeError (..), TypeResult (..), pattern Err, pattern Ok)
+import Javalette.Check.TypeError (TypeError (..), TypeResult (..), pattern Err)
 import Javalette.Check.TypedAST
 import qualified Javalette.Lang.Abs as J
 
@@ -59,8 +57,8 @@ check prog@(J.Program tds) = do
   -- First pass: collect identifiers and what kind of definition they belong to.
   defs <- collectGlobIds prog
   runChk preludeContext $ do
-    -- Second pass: save fns and classes. Also check for main function.
     setDefKinds defs
+    -- Second pass: save fns and classes. Also check for main function.
     mapM_ saveAlias tds
     mapM_ saveTopDef tds
     main <- lookupFnEntry "main"
@@ -109,7 +107,7 @@ collectGlobIds (J.Program tds) = foldrM insertDef Map.empty (normaliseTopDefs td
     topDefKind J.ClsDef {} = ClsKind
     topDefKind J.SubClsDef {} = ClsKind
 
--- * Type checking functions (second pass)
+-- * Collecting type information (second pass)
 
 -- | The monad used by the type checker. Keeps track of the context using the
 -- @State@ monad and any errors using the @Except@ monad.
@@ -134,9 +132,8 @@ saveAlias (J.TypeDef id alias) = do
   addTypeAlias (toTypeId alias) aliased
 saveAlias _ = return ()
 
--- | Save a 'TopDef' into the current 'Context'.
---
--- Type aliases need to be handled beforehand.
+-- | Save a 'TopDef' into the current 'Context'. Type aliases need to be handled
+-- beforehand.
 saveTopDef :: J.TopDef -> Chk ()
 saveTopDef (J.FnDef ret id params _blk) = do
   let fnId = toFnId id
@@ -144,28 +141,47 @@ saveTopDef (J.FnDef ret id params _blk) = do
   castedArgs <- paramTypes params
   extendFnContext (toFnId id, castedRet, castedArgs)
 saveTopDef (J.StrDef id flds) = do
-  entries <-
-    mapM
-      ( \(J.StrFld typ ids) -> do
-          casted <- castType typ
-          return $ map (\(J.FldIdent id) -> (toVarId id, casted)) ids
+  let strId = toTypeId id
+  entryList <-
+    concat
+      <$> mapM
+        ( \(J.StrFld typ ids) -> do
+            casted <- castType typ
+            return $ map (\(J.FldIdent id) -> (toVarId id, casted)) ids
+        )
+        flds
+  entryMap <-
+    foldrM
+      ( \(varId, typ) m ->
+          if Map.notMember varId m
+            then return $ Map.insert varId typ m
+            else throwError (DuplicateField varId strId)
       )
-      flds
-  entries2 <- foldrM (\(varId, typ) m -> if Map.notMember varId m then return $ Map.insert varId typ m else throwError (DuplicateVariable varId)) Map.empty (concat entries)
+      Map.empty
+      entryList
   insertStructEntry $
     StrContext
-      { strName = toTypeId id,
-        strFlds = entries2
+      { strName = strId,
+        strFlds = entryMap
       }
 saveTopDef (J.ExtStrDef id flds _) = saveTopDef $ J.StrDef id flds
 saveTopDef (J.TypeDef id alias) = return ()
 saveTopDef (J.EnumDef id flds) = do
-  let entries = map (\(J.EnumFld fldId) -> toVarId fldId) flds
-  entries2 <- foldrM (\varId m -> if Set.notMember varId m then return $ Set.insert varId m else throwError (DuplicateVariable varId)) Set.empty entries
+  let strId = toTypeId id
+  let entryList = map (\(J.EnumFld fldId) -> toVarId fldId) flds
+  entrySet <-
+    foldrM
+      ( \varId m ->
+          if Set.notMember varId m
+            then return $ Set.insert varId m
+            else throwError (DuplicateField varId strId)
+      )
+      Set.empty
+      entryList
   insertEnumEntry $
     EnumContext
-      { enumName = toTypeId id,
-        enumFlds = entries2
+      { enumName = strId,
+        enumFlds = entrySet
       }
 saveTopDef (J.ClsDef id elems) = do
   let clsId = toTypeId id
@@ -225,7 +241,7 @@ checkProgram (J.Program tds) = Program . catMaybes <$> mapM checkTopDef tds
 -- | Typecheck a function's or class' body. Returns the input augmented with
 -- type annotations if succesful or throws a 'TypeError' otherwise.
 --
--- Returns 'Nothing' if the 'TopDef' is stripped away, e.g 'TypeDef's
+-- Returns 'Nothing' if the 'TopDef' is stripped away, e.g 'TypeDef's.
 checkTopDef :: J.TopDef -> Chk (Maybe TopDef)
 checkTopDef (J.FnDef ret id params (J.Block stmts)) = do
   castedRet <- castType ret
@@ -289,8 +305,9 @@ checkClassItem (J.MethDef ret id params (J.Block stmts)) = do
 checkStmts :: [J.Stmt] -> Type -> Chk [Stmt]
 checkStmts stmts ret = mapM (`checkStmt` ret) stmts
 
--- | Typecheck a single statement. Returns the input augmented with type
--- annotations if succesful or throws a 'TypeError' otherwise.
+-- | Typecheck a single statement. Type argument specifies the expected return
+-- type. Returns the input augmented with type annotations if succesful or
+-- throws a 'TypeError' otherwise.
 checkStmt :: J.Stmt -> Type -> Chk Stmt
 checkStmt J.Empty _ = return Empty
 checkStmt (J.BStmt (J.Block stmts)) ret = do
@@ -417,8 +434,9 @@ checkDeclItems (item : items) typ = case item of
       else throwError $ TypeMismatch inferred typ
 
 -- | Typecheck the arguments of a function call. Returns the input augmented
--- with type annotations if succesful or throws a 'TypeError' otherwise. If
--- 'True' is specified, the function is treated as a method and the first
+-- with type annotations if succesful or throws a 'TypeError' otherwise.
+
+-- If 'True' is specified, the function is treated as a method and the first
 -- parameter is ignored, i.e. the first argument is checked against the second
 -- parameter.
 checkFnArgs :: [J.Expr] -> Type -> Bool -> Chk [TExpr]
@@ -439,7 +457,7 @@ checkFnArgs _exprs typ _ = throwError $ ExpectedFnType typ
 
 -- | Infer the type of an expression. Augments the expression and (if applicable)
 -- any subexpressions with type annotations. Typechecks subexpressions, which
--- can lead to a 'TypeError' being throwin.
+-- can lead to a 'TypeError' being thrown.
 inferExpr :: J.Expr -> Chk TExpr
 inferExpr (J.EVar id) =
   catchError
@@ -458,7 +476,7 @@ inferExpr (J.ENull id) = do
     Object clsId -> do
       typ <- lookupClass clsId
       return $ ENull clsId typ
-    _ -> throwError $ ExpectedObjType casted
+    _ -> throwError $ InvalidNullPtr casted
 inferExpr (J.ECall id exprs) = do
   let fnId = toFnId id
   typ <- findFn fnId
@@ -474,7 +492,7 @@ inferExpr (J.ENew typ sizes) = do
       case casted of
         Struct strId -> return $ EStrInit strId
         Object clsId -> return $ EObjInit clsId
-        _ -> throwError $ ExpectedObjType casted
+        _ -> throwError $ ExpectedComplexType casted
     _ -> do
       (annotated, arrType) <- inferSizeItems sizes casted
       return $ EArrAlloc casted annotated arrType
@@ -492,12 +510,12 @@ inferExpr (J.EDot expr (J.EVar id)) = do
       enum <- fromJust <$> lookupEnumEntry enumId
       if Set.member varId (enumFlds enum)
         then return $ EEnum enumId varId
-        else throwError $ UndeclaredVar varId
+        else throwError $ FieldNotFound varId enumId
     (Array typ) ->
       if varId == "length"
         then return $ EArrLen annotated
         else throwError $ UnknownProperty varId
-    typ -> throwError $ ExpectedArrType typ
+    typ -> throwError $ InvalidAccessor typ
 inferExpr (J.EDot expr (J.ECall id args)) = do
   let fnId = toFnId id
   annotatedObj <- inferExpr expr
@@ -507,8 +525,10 @@ inferExpr (J.EDot expr (J.ECall id args)) = do
       annotatedArgs <- checkFnArgs args typ True
       case typ of
         (Fn ret _) -> return $ EMethCall annotatedObj ownerId fnId annotatedArgs typ ret
-    typ -> throwError $ ExpectedObjType typ
-inferExpr (J.EDot _ expr) = throwError $ InvalidAccessor expr
+    typ -> throwError $ InvalidAccessor typ
+inferExpr (J.EDot expr _) = do
+  annotated <- inferExpr expr
+  throwError $ InvalidAccessor (getType annotated)
 inferExpr (J.EDeref expr id) = do
   let fldId = toVarId id
   annotated <- inferExpr expr
@@ -730,19 +750,19 @@ createClassDescriptor clsId items = do
         Just meth -> mergeMeths superMeths thisMeths
         Nothing -> superMeth : mergeMeths superMeths thisMeths
 
--- Specialise an 'J.Ident' into a variable identifier ('VarIdent').
+-- | Specialise an 'J.Ident' into a variable identifier ('VarIdent').
 toVarId :: J.Ident -> VarIdent
 toVarId (J.Ident id) = VarId id
 
--- Specialise an 'J.Ident' into a function or method identifier ('FnIdent').
+-- | Specialise an 'J.Ident' into a function or method identifier ('FnIdent').
 toFnId :: J.Ident -> FnIdent
 toFnId (J.Ident id) = FnId id
 
--- Specialise an 'J.Ident' into a named type identifier ('TypeIdent').
+-- | Specialise an 'J.Ident' into a named type identifier ('TypeIdent').
 toTypeId :: J.Ident -> TypeIdent
 toTypeId (J.Ident id) = TyId id
 
--- Convert a 'J.Type' into a 'Type'. Performs type specialisation on 'J.Named'
+-- | Convert a 'J.Type' into a 'Type'. Performs type specialisation on 'J.Named'
 -- types.
 castType :: J.Type -> Chk Type
 castType J.Int = return Int
@@ -1015,7 +1035,7 @@ lookupStrField strId varId = do
   str <- gets $ fromJust . Map.lookup strId . strs
   case Map.lookup varId (strFlds str) of
     Just typ -> return typ
-    Nothing -> throwError $ UndeclaredVar varId
+    Nothing -> throwError $ FieldNotFound varId strId
 
 -- | Insert an enum entry into the context.
 insertEnumEntry :: EnumContext -> Chk ()
@@ -1108,7 +1128,7 @@ lookupMethod id clsId = do
         Nothing ->
           case super cls of
             Just superId -> lookupMethod id superId
-            Nothing -> throwError $ MethodNotFound id
+            Nothing -> throwError $ MethodNotFound id clsId
     Nothing -> throwError $ ClassNotFound clsId
 
 -- | Set the kind of all top-level type definitions.

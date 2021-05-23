@@ -1,6 +1,7 @@
 {-# LANGUAGE Safe #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
+-- | Definition and parser for CLI arguments.
 module Javalette.CLI
   ( Flag (..),
     parseOpts,
@@ -16,13 +17,14 @@ import System.Console.GetOpt
       OptDescr(..) )
 
 -- | Possible compiler flags.
-data Flag = Standalone | OutputFile String | IntermediateRepr | TypeCheck | LLVM | X86
+data Flag = Standalone | OutputFile String | ParserRepr | IntermediateRepr | TypeCheck | LLVM | X86
   deriving (Show)
 
 -- | Two options are treated as equal independent from their arguments.
 instance Eq Flag where
   Standalone == Standalone = True
   OutputFile _ == OutputFile _ = True
+  ParserRepr == ParserRepr = True
   IntermediateRepr == IntermediateRepr = True
   TypeCheck == TypeCheck = True
   LLVM == LLVM = True
@@ -43,25 +45,30 @@ options =
       (OptArg outp "FILE")
       "Redirect output to this file.",
     Option
+      ['p']
+      ["parser"]
+      (NoArg ParserRepr)
+      "Only run the parser and output the parsed AST. Not compatible with '-i', '-t', '-l' or '-x'.",
+    Option
       ['i']
       ["intermediate"]
       (NoArg IntermediateRepr)
-      "Abort compilation after typechecking and output the IR. Not compatible with '-t', '-l' or '-x'.",
+      "Abort compilation after typechecking and output the IR. Not compatible with '-p', '-t', '-l' or '-x'.",
     Option
       ['t']
       ["typecheck"]
       (NoArg TypeCheck)
-      "Only run type checker. Not compatible with '-i', '-l' or '-x'.",
+      "Only run type checker. Not compatible with '-p', '-i', '-l' or '-x'.",
     Option
       ['l']
       ["llvm"]
       (NoArg LLVM)
-      "Compile to LLVM byte code. Not compatible with '-i', '-t' or '-x'. (default)",
+      "Compile to LLVM byte code. Not compatible with '-p', '-i', '-t' or '-x'. (default)",
     Option
       ['x']
       ["x86"]
       (NoArg X86)
-      "Compile to x86 assembler. Not compatible with '-i', '-l' or '-t'. (unsupported atm)"
+      "Compile to x86 assembler. Not compatible with '-p', '-i', '-l' or '-t'. (unsupported)"
   ]
   where
     outp :: Maybe String -> Flag
@@ -73,8 +80,8 @@ parseOpts :: [String] -> IO ([Flag], Maybe String)
 parseOpts args =
   case getOpt RequireOrder options args of
     (flags, files, []) -> do
-      if length (filter (\x -> x == IntermediateRepr || x == TypeCheck || x == LLVM || x == X86) flags) > 1
-        then printErrors ["Conflicting arguments. Can only use one of '-i', '-t', '-l' or '-x'."]
+      if length (filter (\x -> x == ParserRepr || x == IntermediateRepr || x == TypeCheck || x == LLVM || x == X86) flags) > 1
+        then printErrors ["Conflicting arguments. Can only use one of '-p', '-i', '-t', '-l' or '-x'."]
         else
           if X86 `elem` flags
             then printErrors ["x86 is currently unsupported."]

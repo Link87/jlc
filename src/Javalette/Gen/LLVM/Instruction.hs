@@ -1,7 +1,8 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE Trustworthy #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
+-- | Available LLVM instructions and corresponding data types.
 module Javalette.Gen.LLVM.Instruction
   ( Instruction (..),
     Type (..),

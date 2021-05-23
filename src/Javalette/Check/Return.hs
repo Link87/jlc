@@ -1,6 +1,7 @@
 {-# LANGUAGE Safe #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
+-- | Types for function return checking.
 module Javalette.Check.Return
   ( ReturnState (NoReturn, Return),
     both,

@@ -1,8 +1,7 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTSyntax #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE Trustworthy #-}
+{-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
 -- | The Typed AST for Javalette. Contains type annotations and expression
 -- specialisations in comparison to the untyped AST.
@@ -28,10 +27,11 @@ data TopDef
 data Param = Parameter Type VarIdent
   deriving (Show)
 
--- | A Struct field.
+-- | A struct field.
 data StrField = StrFld Type VarIdent
   deriving (Show)
 
+-- | An enum field.
 newtype EnumField = EnumFld VarIdent
   deriving (Show)
 
@@ -208,7 +208,7 @@ getType EOr {} = Boolean
 getType (EArrAlloc _ _ typ) = typ
 getType EArrLen {} = Int
 getType (EArrIndex _ _ typ) = typ
-getType (EStrInit id ) = Ptr $ Struct id
+getType (EStrInit id) = Ptr $ Struct id
 getType (EDeref _ _ typ) = typ
 getType (EEnum id _) = Enum id
 getType (EObjInit id) = Object id

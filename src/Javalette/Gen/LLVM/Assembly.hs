@@ -2,6 +2,8 @@
 {-# LANGUAGE Safe #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
+-- | Convert the internal representation of LLVM instructions into textual LLVM
+-- assembly code (LLVM IR).
 module Javalette.Gen.LLVM.Assembly
   ( generateCode,
   )
@@ -471,4 +473,4 @@ llvmLocIdent (Ident name) = B.singleton '%' <> B.fromText name
 
 -- | Indentation for LLVM instructions. Improves readability.
 indent :: Builder
-indent = "  "
+indent = "    "

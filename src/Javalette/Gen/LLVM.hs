@@ -34,7 +34,6 @@ import Data.Maybe (fromJust)
 import Data.Monoid (Endo (..), appEndo)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Debug.Trace
 import Javalette.Check.TypeCheck (AnnotatedProg)
 import Javalette.Check.TypedAST
 import Javalette.Gen.LLVM.Assembly (generateCode)
@@ -158,8 +157,7 @@ compileDscs (Program (ClsDef clsId _ vars meths : rest)) = do
 compileProg :: AnnotatedProg -> Gen ()
 compileProg (Program tds) = mapM_ compileTopDef tds
 
--- | Compile a function or methods in a class definition into a list of
--- instructions.
+-- | Compile a top-level definition into a list of instructions.
 compileTopDef :: TopDef -> Gen ()
 compileTopDef (FnDef typ jlId params (Block stmts)) = do
   compileFn typ (toLLVMIdent jlId) params stmts
@@ -562,8 +560,8 @@ newVarInstr jlId typ = do
   return llvmId
 
 -- | Emit an instruction to load a variable by its name in the AST. A new unique
--- variable name for LLVM is generated. The variable has to be pushed to the
--- stack beforehand.
+-- variable name for LLVM is generated. The variable must have been pushed to
+-- the stack beforehand.
 loadVarInstr :: VarIdent -> Type -> Gen L.Value
 loadVarInstr jlId typ = do
   llvmType <- toLLVMType typ
@@ -574,7 +572,8 @@ loadVarInstr jlId typ = do
   L.Loc <$> instr (\id -> L.Load id llvmType llvmId)
 
 -- | Look up the address of an lvalue. If a plain variable, the variable stack
--- is searched as usual. If indexed, appropriate instructions are emitted.
+-- is searched as usual. If it contains array indices or derefs, appropriate
+-- instructions are emitted.
 lookupLVal :: LValue -> Gen L.Ident
 lookupLVal (VarVal jlId typ) = do
   res <- lookupVar jlId
@@ -599,7 +598,7 @@ lookupLVal (DerefVal lval jlId typ) = do
   llvmStrId <- instr $ \id -> L.Load id llvmPtrType llvmPtrId
   instr $ \id -> L.GetElementPtr id llvmStrType (L.Loc llvmStrId) [L.Offset (L.Int 32) 0, L.VarOffset (L.Int 32) (L.IConst fldInd)]
 
--- | Emit a label instruction and update the currently set label. Don't emit
+-- | Emit a label instruction and update the currently set label. Do not emit
 -- 'L.LabelDef's manually.
 labelInstr :: L.Ident -> Gen ()
 labelInstr llvmLabId = do
@@ -620,7 +619,7 @@ instVarInstr jlId typ = do
   instr $ \id -> L.GetElementPtr id llvmClsType (L.Loc llvmVarId) [L.Offset (L.Int 32) 0, L.VarOffset (L.Int 32) (L.IConst varInd)]
 
 -- | If applicable and necessary, emit an instruction to cast an object to
--- another class type. Undefined behaviour if both types are class types but
+-- another class type. Undefined behaviour, if both types are class types but
 -- the first type is not a subtype of the second type.
 polymorphicCastInstr :: Type -> Type -> L.Value -> Gen L.Value
 polymorphicCastInstr from into val =

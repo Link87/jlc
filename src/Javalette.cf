@@ -8,7 +8,7 @@ FnDef.	    TopDef ::= Type Ident "(" [Param] ")" Blk ;
 
 StrDef.     TopDef ::= "struct" Ident "{" [StrItem] "}" ";" ;
 
-ExtStrDef. TopDef ::= "typedef" "struct" Ident "{" [StrItem] "}" "*" Ident ";" ;
+ExtStrDef.  TopDef ::= "typedef" "struct" Ident "{" [StrItem] "}" "*" Ident ";" ;
 
 EnumDef.    TopDef ::= "enum" Ident "{" [EnumItem] "}" ";" ;
 
@@ -90,7 +90,7 @@ Boolean.    Type ::= "boolean" ;
 
 Void.       Type ::= "void" ;
 
-Array.      Type ::= Type "[]";
+Array.      Type ::= Type "[]" ;
 
 Named.      Type ::= Ident ;
 

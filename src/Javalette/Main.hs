@@ -3,6 +3,7 @@
 {-# LANGUAGE Trustworthy #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
+-- | Main module. Either loads a file from disk or reads input from @stdin@.
 module Main where
 
 import Control.Monad (void, when)
@@ -22,9 +23,8 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import Javalette.CLI (Flag (..), parseOpts)
 import Javalette.Check.TypeCheck (check)
-import Javalette.Gen.LLVM
+import Javalette.Gen.LLVM (generateIR)
 import Javalette.Lang.Par (myLexer, pProg)
-import Javalette.Lang.Print (printTree)
 import System.Environment (getArgs)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (Handle, stderr, stdout)
@@ -51,9 +51,11 @@ runOutput flags (MkOutput out) = void $ runReaderT out flags
 compile :: Text -> Output ()
 compile s = do
   standalone <- asks $ elem Standalone
+  parser <- asks $ elem ParserRepr
   typecheck <- asks $ elem TypeCheck
   intermediate <- asks $ elem IntermediateRepr
   llvm <- llvmFlagSet
+  when standalone $ outputString "Parsing..."
   case pProg (myLexer s) of
     Left err -> do
       if standalone
@@ -66,6 +68,8 @@ compile s = do
           outputErr $ T.pack err
       liftIO exitFailure
     Right tree -> do
+      when parser $ outputResult tree >> liftIO exitSuccess
+      when standalone $ outputString "Checking..."
       case check tree of
         Left err -> do
           if standalone
@@ -79,17 +83,13 @@ compile s = do
           liftIO exitFailure
         Right annotated -> do
           if standalone
-            then do
-              outputString "Type check successful."
-              when intermediate $ outputResult annotated "Generated AST IR:" >> liftIO exitSuccess
-            else do
-              outputErr "OK"
-              when intermediate $ outputResult annotated "Generated AST IR:" >> liftIO exitSuccess
+            then outputString "Type check successful."
+            else outputErr "OK"
           when typecheck $ liftIO exitSuccess
-          let llvmIR = generateIR annotated
-          if standalone
-            then when llvm $ outputTextResult llvmIR "Generated LLVM IR:"
-            else when llvm $ outputTextResult llvmIR ""
+          when intermediate $ outputResult annotated >> liftIO exitSuccess
+          when llvm $ do
+            when standalone $ outputString "Compiling..."
+            outputTextResult (generateIR annotated)
 
 -- | Print text to @stdout@.
 outputString :: Text -> Output ()
@@ -101,26 +101,22 @@ outputErr = liftIO . TIO.hPutStrLn stderr
 
 -- | Write output to the output destination specified in the flags. Use this for
 -- a compilation result.
-outputResult :: Show a => a -> Text -> Output ()
-outputResult out msg = do
+outputResult :: Show a => a -> Output ()
+outputResult out = do
   flags <- ask
   case find (== OutputFile "") flags of
-    Nothing -> do
-      outputString msg
-      outputString (T.pack $ show out)
+    Nothing -> outputString (T.pack $ show out)
     Just (OutputFile file) -> do
       liftIO $ writeFile file (show out)
       outputString $ "Output successfully written to " <> T.pack file
 
 -- | Write output to the output destination specified in the flags. Use this for
 -- an already 'Text'-based compilation result.
-outputTextResult :: Text -> Text -> Output ()
-outputTextResult out msg = do
+outputTextResult :: Text -> Output ()
+outputTextResult out = do
   flags <- ask
   case find (== OutputFile "") flags of
-    Nothing -> do
-      outputString msg
-      outputString out
+    Nothing -> outputString out
     Just (OutputFile file) -> do
       liftIO $ TIO.writeFile file out
       outputString $ "Output successfully written to " <> T.pack file

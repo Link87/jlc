@@ -3,24 +3,27 @@
 {-# LANGUAGE Trustworthy #-}
 {-# OPTIONS_HADDOCK prune, ignore-exports, show-extensions #-}
 
-module Javalette.Check.TypeError (
-    TypeResult (..),
+-- | Type errors thrown by the type checker.
+module Javalette.Check.TypeError
+  ( TypeResult (..),
     TypeError (..),
     pattern Ok,
     pattern Err,
-)
+  )
 where
 
 import qualified Data.Text as T
-import Javalette.Check.TypedAST
+import Javalette.Check.TypedAST (FnIdent, Type, TypeIdent, VarIdent)
 import qualified Javalette.Lang.Abs as J
 
 -- | A result of the type checker. Is either a computed value or a `TypeError`.
 type TypeResult a = Either TypeError a
 
+-- | Successful result.
 pattern Ok :: b -> Either a b
 pattern Ok a = Right a
 
+-- | Unsuccessful result.
 pattern Err :: a -> Either a b
 pattern Err msg = Left msg
 
@@ -33,22 +36,26 @@ data TypeError
   | ExpectedStrPtrType Type
   | ExpectedEnumType Type
   | ExpectedObjType Type
+  | ExpectedComplexType Type
   | ExpectedLValue J.Expr
   | ArgumentMismatch
   | DuplicateDefinition TypeIdent
   | DuplicateVariable VarIdent
   | DuplicateFunction FnIdent
+  | DuplicateField VarIdent TypeIdent
   | DuplicateMethod FnIdent TypeIdent
   | DuplicateInstanceVar VarIdent TypeIdent
   | UndeclaredVar VarIdent
   | FunctionNotFound FnIdent
   | TypeNotFound TypeIdent
   | StructNotFound TypeIdent
+  | FieldNotFound VarIdent TypeIdent
   | ClassNotFound TypeIdent
-  | MethodNotFound FnIdent
+  | MethodNotFound FnIdent TypeIdent
   | InvalidAlias TypeIdent
   | UnknownProperty VarIdent
-  | InvalidAccessor J.Expr
+  | InvalidAccessor Type
+  | InvalidNullPtr Type
   | MainNotFound
   | MainArguments
   | MainReturnType
@@ -84,6 +91,8 @@ instance Show TypeError where
     showString "Type Mismatch: Expected an enum but got " . shows got . showString "."
   showsPrec _ (ExpectedObjType got) =
     showString "Type Mismatch: Expected an object but got " . shows got . showString "."
+  showsPrec _ (ExpectedComplexType got) =
+    showString "Type Mismatch: Expected a struct or class but got " . shows got . showString "."
   showsPrec _ (ExpectedLValue expr) =
     showString "Expected an lvalue but got expression " . shows expr . showString "."
   showsPrec _ ArgumentMismatch =
@@ -94,6 +103,8 @@ instance Show TypeError where
     showString "Variable declared multiple times: " . shows id . showString "."
   showsPrec _ (DuplicateFunction id) =
     showString "Duplicate identifier. Function name used before:" . shows id . showString "."
+  showsPrec _ (DuplicateField fldId strId) =
+    showString "Duplicate field: Identifier " . shows fldId . showString " used before in type " . shows strId . showString "."
   showsPrec _ (DuplicateMethod fnId clsId) =
     showString "Duplicate method: Identifier " . shows fnId . showString " used before in class " . shows clsId . showString "."
   showsPrec _ (DuplicateInstanceVar varId clsId) =
@@ -106,16 +117,20 @@ instance Show TypeError where
     showString "Declaration for type " . shows id . showString " not found."
   showsPrec _ (StructNotFound id) =
     showString "Struct definition not found for struct " . shows id . showString "."
+  showsPrec _ (FieldNotFound id typeId) =
+    showString "Definition for field " . shows id . showString " not found in type " . shows typeId . showString "."
   showsPrec _ (ClassNotFound id) =
     showString "Class definition not found for class " . shows id . showString "."
-  showsPrec _ (MethodNotFound id) =
-    showString "Method definition not found for method " . shows id . showString "."
+  showsPrec _ (MethodNotFound id clsId) =
+    showString "Method definition not found for method " . shows id . showString " in class " . shows clsId . showString "."
   showsPrec _ (InvalidAlias id) =
     showString "Type alias " . shows id . showString " does not alias a known type."
   showsPrec _ (UnknownProperty id) =
     showString "Property " . shows id . showString " not found."
-  showsPrec _ (InvalidAccessor expr) =
-    showString "Accessor is invalid: '" . shows expr . showString "'."
+  showsPrec _ (InvalidAccessor typ) =
+    showString "Accessor for type " . shows typ . showString " does not exist."
+  showsPrec _ (InvalidNullPtr typ) =
+    showString "Cannot take null pointer of type " . shows typ . showString "'."
   showsPrec _ MainNotFound = showString "No function 'main' found."
   showsPrec _ MainArguments = showString "Function 'main' must not have arguments."
   showsPrec _ MainReturnType = showString "Function 'main' must return 'int'."
