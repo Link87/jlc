@@ -19,7 +19,8 @@ newtype TypedProg = Program [TopDef]
 -- | A top-level definition.
 data TopDef
   = FnDef Type FnIdent [Param] Blk
-  | StrDef TypeIdent [StrItem]
+  | StrDef TypeIdent [StrField]
+  | EnumDef TypeIdent [EnumField]
   | ClsDef TypeIdent [ClsItem] [ClsVar] [ClsMeth]
   deriving (Show)
 
@@ -28,7 +29,10 @@ data Param = Parameter Type VarIdent
   deriving (Show)
 
 -- | A Struct field.
-data StrItem = StrFld Type VarIdent
+data StrField = StrFld Type VarIdent
+  deriving (Show)
+
+newtype EnumField = EnumFld VarIdent
   deriving (Show)
 
 -- | A class member.
@@ -85,9 +89,11 @@ data Type
   | Void
   | Array Type
   | Struct TypeIdent
+  | Enum TypeIdent
   | Object TypeIdent
   | Ptr Type
   | Fn Type [Type]
+  | Type Type
   deriving (Eq)
 
 instance Show Type where
@@ -97,10 +103,12 @@ instance Show Type where
   showsPrec _ String = showString "String"
   showsPrec _ Void = showString "void"
   showsPrec _ (Array typ) = shows typ . showString "[]"
-  showsPrec _ (Object id) = shows id
   showsPrec _ (Struct id) = shows id
+  showsPrec _ (Enum id) = shows id
+  showsPrec _ (Object id) = shows id
   showsPrec _ (Ptr id) = showString "*" . shows id
   showsPrec _ (Fn typ args) = showString "fn " . shows typ . showString "(" . shows args . showString ")"
+  showsPrec _ (Type typ) = showString "type " . shows typ
 
 -- | A typed expression.
 data TExpr
@@ -122,10 +130,12 @@ data TExpr
   | EArrAlloc Type [SizeItem] Type
   | EArrLen TExpr
   | EArrIndex TExpr TExpr Type
-  | EStrInit Type
+  | EStrInit TypeIdent
   | EDeref TExpr VarIdent Type
-  | EObjInit Type
+  | EEnum TypeIdent VarIdent
+  | EObjInit TypeIdent
   | EMethCall TExpr TypeIdent FnIdent [TExpr] Type Type
+  | EType Type
   deriving (Show)
 
 -- | A size specification in the declaration of an array
@@ -198,10 +208,12 @@ getType EOr {} = Boolean
 getType (EArrAlloc _ _ typ) = typ
 getType EArrLen {} = Int
 getType (EArrIndex _ _ typ) = typ
-getType (EStrInit typ) = Ptr typ
+getType (EStrInit id ) = Ptr $ Struct id
 getType (EDeref _ _ typ) = typ
-getType (EObjInit typ) = typ
+getType (EEnum id _) = Enum id
+getType (EObjInit id) = Object id
 getType (EMethCall _ _ _ _ _ typ) = typ
+getType (EType typ) = Type typ
 
 -- | Obtain the type of an lvalue.
 getLValType :: LValue -> Type

@@ -31,6 +31,7 @@ data TypeError
   | ExpectedFnType Type
   | ExpectedArrType Type
   | ExpectedStrPtrType Type
+  | ExpectedEnumType Type
   | ExpectedObjType Type
   | ExpectedLValue J.Expr
   | ArgumentMismatch
@@ -77,10 +78,12 @@ instance Show TypeError where
     showString "Type Mismatch: Expected a function but got " . shows got . showString "."
   showsPrec _ (ExpectedArrType got) =
     showString "Type Mismatch: Expected an array but got " . shows got . showString "."
-  showsPrec _ (ExpectedObjType got) =
-    showString "Type Mismatch: Expected an object but got " . shows got . showString "."
   showsPrec _ (ExpectedStrPtrType got) =
     showString "Type Mismatch: Expected a pointer to a struct but got " . shows got . showString "."
+  showsPrec _ (ExpectedEnumType got) =
+    showString "Type Mismatch: Expected an enum but got " . shows got . showString "."
+  showsPrec _ (ExpectedObjType got) =
+    showString "Type Mismatch: Expected an object but got " . shows got . showString "."
   showsPrec _ (ExpectedLValue expr) =
     showString "Expected an lvalue but got expression " . shows expr . showString "."
   showsPrec _ ArgumentMismatch =

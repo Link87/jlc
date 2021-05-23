@@ -36,10 +36,10 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Debug.Trace
 import Javalette.Check.TypeCheck (AnnotatedProg)
+import Javalette.Check.TypedAST
 import Javalette.Gen.LLVM.Assembly (generateCode)
 import Javalette.Gen.LLVM.Instruction (Instruction)
 import qualified Javalette.Gen.LLVM.Instruction as L
-import Javalette.Check.TypedAST
 
 -- * Main function
 
@@ -111,13 +111,22 @@ compileDscs (Program (StrDef strId flds : rest)) = do
   emitGlob $ L.TypeDef llvmStrTypeId (L.Struct llvmFldTypes)
   compileDscs $ Program rest
   where
-    registerStrFlds :: [StrItem] -> TypeIdent -> Int -> Gen [L.Type]
+    registerStrFlds :: [StrField] -> TypeIdent -> Int -> Gen [L.Type]
     registerStrFlds [] _ _ = return []
     registerStrFlds (StrFld typ jlId : flds) strId index = do
       addStrFld strId jlId index
       llvmType <- toLLVMType typ
       llvmTypes <- registerStrFlds flds strId (index + 1)
       return $ llvmType : llvmTypes
+compileDscs (Program (EnumDef enumId flds : rest)) = do
+  registerEnumFlds flds enumId 0
+  compileDscs $ Program rest
+  where
+    registerEnumFlds :: [EnumField] -> TypeIdent -> Int -> Gen ()
+    registerEnumFlds [] _ _ = return ()
+    registerEnumFlds (EnumFld jlId : flds) enumId index = do
+      addEnumFld enumId jlId index
+      registerEnumFlds flds enumId (index + 1)
 compileDscs (Program (ClsDef clsId _ vars meths : rest)) = do
   llvmClsTypeId <- getClsTypeName clsId
   llvmDscTypeId <- getDcsTypeName clsId
@@ -155,6 +164,7 @@ compileTopDef :: TopDef -> Gen ()
 compileTopDef (FnDef typ jlId params (Block stmts)) = do
   compileFn typ (toLLVMIdent jlId) params stmts
 compileTopDef StrDef {} = return ()
+compileTopDef EnumDef {} = return ()
 compileTopDef (ClsDef clsId items _ _) = do
   enterCls clsId
   mapM_
@@ -385,6 +395,7 @@ compileExpr (ERel expr1 op expr2) = do
       llvmStr1Id <- instr $ \id -> L.PtrToInt id llvmType val1 (L.Int 32)
       llvmStr2Id <- instr $ \id -> L.PtrToInt id llvmType val2 (L.Int 32)
       L.Loc <$> instr (\id -> L.ICompare id llvmRelOp (L.Int 32) (L.Loc llvmStr1Id) (L.Loc llvmStr2Id))
+    Enum _ -> L.Loc <$> instr (\id -> L.ICompare id llvmRelOp (L.Int 32) val1 val2)
     Object _ -> do
       llvmType2 <- toLLVMType $ getType expr2
       llvmObj1Id <- instr $ \id -> L.PtrToInt id llvmType val1 (L.Int 32)
@@ -430,8 +441,8 @@ compileExpr (EArrIndex expr1 expr2 typ) = do
   llvmArrId <- instr $ \id -> L.ExtractValue id llvmArrType llvmArrVal [1]
   llvmElmId <- instr $ \id -> L.GetElementPtr id llvmType (L.Loc llvmArrId) [L.VarOffset (L.Int 32) llvmIndVal]
   L.Loc <$> instr (\id -> L.Load id llvmType llvmElmId)
-compileExpr (EStrInit typ@(Struct strId)) = do
-  llvmStrType <- toLLVMType typ
+compileExpr (EStrInit strId) = do
+  llvmStrType <- toLLVMType (Struct strId)
   let llvmPtrType = L.Ptr llvmStrType
   llvmNulId <- instr $ \id -> L.GetElementPtr id llvmStrType L.NullPtr [L.Offset (L.Int 32) 1]
   llvmLenId <- instr $ \id -> L.PtrToInt id llvmPtrType (L.Loc llvmNulId) (L.Int 32)
@@ -445,10 +456,11 @@ compileExpr (EDeref expr jlId typ) = do
   llvmStrVal <- compileExpr expr
   llvmPtrId <- instr $ \id -> L.GetElementPtr id llvmStrType llvmStrVal [L.Offset (L.Int 32) 0, L.VarOffset (L.Int 32) (L.IConst fldInd)]
   L.Loc <$> instr (\id -> L.Load id llvmFldType llvmPtrId)
-compileExpr (EObjInit typ@(Object clsId)) = do
+compileExpr (EEnum enumId jlId) = L.IConst <$> getEnumFld enumId jlId
+compileExpr (EObjInit clsId) = do
   llvmClsType <- L.Named <$> getClsTypeName clsId
   llvmDscType <- L.Named <$> getDcsTypeName clsId
-  llvmRefType <- toLLVMType typ
+  llvmRefType <- toLLVMType $ Object clsId
   llvmDscId <- getDcsName clsId
   llvmNulId <- instr $ \id -> L.GetElementPtr id llvmClsType L.NullPtr [L.Offset (L.Int 32) 1]
   llvmLenId <- instr $ \id -> L.PtrToInt id llvmRefType (L.Loc llvmNulId) (L.Int 32)
@@ -587,8 +599,6 @@ lookupLVal (DerefVal lval jlId typ) = do
   llvmStrId <- instr $ \id -> L.Load id llvmPtrType llvmPtrId
   instr $ \id -> L.GetElementPtr id llvmStrType (L.Loc llvmStrId) [L.Offset (L.Int 32) 0, L.VarOffset (L.Int 32) (L.IConst fldInd)]
 
-
-
 -- | Emit a label instruction and update the currently set label. Don't emit
 -- 'L.LabelDef's manually.
 labelInstr :: L.Ident -> Gen ()
@@ -637,8 +647,9 @@ toLLVMType String = return $ L.Ptr $ L.Int 8
 toLLVMType (Array typ) = do
   inner <- toLLVMType typ
   return $ L.Struct [L.Int 32, L.Ptr inner]
-toLLVMType (Object jlId) = L.Ptr . L.Named <$> getClsTypeName jlId
 toLLVMType (Struct jlId) = L.Named <$> getStrTypeName jlId
+toLLVMType (Enum _) = return $ L.Int 32
+toLLVMType (Object jlId) = L.Ptr . L.Named <$> getClsTypeName jlId
 toLLVMType (Ptr typ) = L.Ptr <$> toLLVMType typ
 toLLVMType (Fn ret params) = liftM2 L.Fn (toLLVMType ret) (mapM toLLVMType params)
 
@@ -690,8 +701,15 @@ zipArgs args types = do
 
 -- | An environment to save data used during compilation.
 data Env = Env
-  { vars :: [Map VarIdent L.Ident],
+  { -- | The stack of local variables. Maps local IR variable names to LLVM IR
+    -- variable names.
+    vars :: [Map VarIdent L.Ident],
+    -- | Map a struct field and its struct's name to the corresponding index in
+    -- the struct field list.
     strFldInds :: Map (TypeIdent, VarIdent) Int,
+    -- | Map an enum field and its enum's name to the corresponding integer
+    -- representation.
+    enumFldReprs :: Map (TypeIdent, VarIdent) Int,
     -- | Map a method and its class name to the corresponding index in the class
     -- descriptor.
     clsMethInds :: Map (TypeIdent, FnIdent) Int,
@@ -718,6 +736,7 @@ emptyEnv =
   Env
     { vars = [Map.empty],
       strFldInds = Map.empty,
+      enumFldReprs = Map.empty,
       clsMethInds = Map.empty,
       clsVarInds = Map.empty,
       nextVar = 0,
@@ -803,13 +822,23 @@ setCurrentLabel :: L.Ident -> Gen ()
 setCurrentLabel llvmLabId = modify (\env -> env {curLabel = llvmLabId})
 
 -- | Add the details of a struct field to the compilation environment.
--- The index in the LLVM class struct is saved.
+-- The index in the LLVM struct is saved.
 addStrFld :: TypeIdent -> VarIdent -> Int -> Gen ()
 addStrFld strId jlId index = modify (\env -> env {strFldInds = Map.insert (strId, jlId) index (strFldInds env)})
 
 -- | Get the details of a struct field from the compilation environment.
 getStrFld :: TypeIdent -> VarIdent -> Gen Int
 getStrFld strId jlId = gets $ fromJust . Map.lookup (strId, jlId) . strFldInds
+
+-- | Add the details of an enum field to the compilation environment.
+-- The integer representation of the enum (equal to the field's index in the
+-- struct) is saved.
+addEnumFld :: TypeIdent -> VarIdent -> Int -> Gen ()
+addEnumFld enumId jlId index = modify (\env -> env {enumFldReprs = Map.insert (enumId, jlId) index (enumFldReprs env)})
+
+-- | Get the details of an enum field from the compilation environment.
+getEnumFld :: TypeIdent -> VarIdent -> Gen Int
+getEnumFld enumId jlId = gets $ fromJust . Map.lookup (enumId, jlId) . enumFldReprs
 
 -- | The name of the class that is currently compiled.
 getCurCls :: Gen (Maybe TypeIdent)

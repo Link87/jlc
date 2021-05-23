@@ -8,6 +8,10 @@ FnDef.	    TopDef ::= Type Ident "(" [Param] ")" Blk ;
 
 StrDef.     TopDef ::= "struct" Ident "{" [StrItem] "}" ";" ;
 
+ExtStrDef. TopDef ::= "typedef" "struct" Ident "{" [StrItem] "}" "*" Ident ";" ;
+
+EnumDef.    TopDef ::= "enum" Ident "{" [EnumItem] "}" ";" ;
+
 ClsDef.	    TopDef ::= "class" Ident "{" [ClsItem] "}" ;
 
 SubClsDef.  TopDef ::= "class" Ident "extends" Ident "{" [ClsItem] "}" ;
@@ -20,15 +24,23 @@ Parameter.  Param ::= Type Ident;
 
 separator   Param "," ;
 
+StrFld.     StrItem ::= Type [FldIdent] ";" ;
+
+separator   StrItem "" ;
+
+FldIdent.   FldIdent ::= Ident ;
+
+separator nonempty FldIdent "," ;
+
+EnumFld.    EnumItem ::= Ident ;
+
+separator   EnumItem "," ;
+
 InstVar.    ClsItem ::= Type Ident ";" ;
 
 MethDef.    ClsItem ::= Type Ident "(" [Param] ")" Blk ;
 
 separator   ClsItem "" ;
-
-StrFld.   StrItem ::= Type Ident ";" ;
-
-separator   StrItem "" ;
 
 -- statements ----------------------------------------------
 
@@ -108,11 +120,11 @@ SizeSpec.   SizeItem ::= "[" Expr "]" ;
 
 separator   SizeItem "" ;
 
+EDeref.     Expr8 ::= Expr8 "->" Ident ;
+
 EArrIndex.  Expr8 ::= Expr8 "[" Expr "]" ;
 
-EDot.       Expr7 ::= Expr7 "." Expr8 ;
-
-EDeref.     Expr6 ::= Expr6 "->" Ident ;
+EDot.       Expr6 ::= Expr6 "." Expr7 ;
 
 ENeg.       Expr5 ::= "-" Expr6 ;
 

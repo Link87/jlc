@@ -40,6 +40,8 @@ import Data.List (find)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe (catMaybes, fromJust)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Debug.Trace
 import Javalette.Check.Return (ReturnState (..), both)
 import Javalette.Check.TypeError (TypeError (..), TypeResult (..), pattern Err, pattern Ok)
@@ -73,7 +75,7 @@ check prog@(J.Program tds) = do
 -- * Collecting global identifiers (first pass)
 
 -- | The kinds of definitions that can occur on the top-level.
-data DefKind = StrKind | AliasKind | ClsKind
+data DefKind = StrKind | AliasKind | EnumKind | ClsKind
   deriving (Show, Eq)
 
 -- | Collect the names and according 'DefKind's of top-level definitions. Throws
@@ -83,19 +85,27 @@ data DefKind = StrKind | AliasKind | ClsKind
 -- structs and are therefore ignored.
 collectGlobIds :: J.Prog -> TypeResult DefKinds
 collectGlobIds (J.Program []) = Err EmptyProgram
-collectGlobIds (J.Program tds) = foldrM insertDef Map.empty tds
+collectGlobIds (J.Program tds) = foldrM insertDef Map.empty (normaliseTopDefs tds)
   where
     insertDef :: J.TopDef -> DefKinds -> TypeResult DefKinds
     insertDef td defs
       | Map.notMember (topDefId td) defs = return $ Map.insert (topDefId td) (topDefKind td) defs
       | otherwise = Err $ DuplicateDefinition (topDefId td)
+    normaliseTopDefs :: [J.TopDef] -> [J.TopDef]
+    normaliseTopDefs [] = []
+    normaliseTopDefs (J.ExtStrDef strId flds aliasId : tds) =
+      J.StrDef strId flds :
+      J.TypeDef strId aliasId : normaliseTopDefs tds
+    normaliseTopDefs (td : tds) = td : normaliseTopDefs tds
     topDefId (J.FnDef _ id _ _) = toTypeId id
     topDefId (J.StrDef id _) = toTypeId id
     topDefId (J.TypeDef _ id) = toTypeId id
+    topDefId (J.EnumDef id _) = toTypeId id
     topDefId (J.ClsDef id _) = toTypeId id
     topDefId (J.SubClsDef id _ _) = toTypeId id
     topDefKind J.StrDef {} = StrKind
     topDefKind J.TypeDef {} = AliasKind
+    topDefKind J.EnumDef {} = EnumKind
     topDefKind J.ClsDef {} = ClsKind
     topDefKind J.SubClsDef {} = ClsKind
 
@@ -118,6 +128,7 @@ runChk ctx (MkChk rd) = runIdentity $ runExceptT $ evalStateT rd ctx
 
 -- | Save 'TypeDef' type aliases into the current 'Context'.
 saveAlias :: J.TopDef -> Chk ()
+saveAlias (J.ExtStrDef id _ alias) = saveAlias $ J.TypeDef id alias
 saveAlias (J.TypeDef id alias) = do
   aliased <- Ptr <$> castType (J.Named id)
   addTypeAlias (toTypeId alias) aliased
@@ -135,17 +146,27 @@ saveTopDef (J.FnDef ret id params _blk) = do
 saveTopDef (J.StrDef id flds) = do
   entries <-
     mapM
-      ( \(J.StrFld typ id) -> do
+      ( \(J.StrFld typ ids) -> do
           casted <- castType typ
-          return (toVarId id, casted)
+          return $ map (\(J.FldIdent id) -> (toVarId id, casted)) ids
       )
       flds
+  entries2 <- foldrM (\(varId, typ) m -> if Map.notMember varId m then return $ Map.insert varId typ m else throwError (DuplicateVariable varId)) Map.empty (concat entries)
   insertStructEntry $
     StrContext
       { strName = toTypeId id,
-        fields = Map.fromList entries
+        strFlds = entries2
       }
+saveTopDef (J.ExtStrDef id flds _) = saveTopDef $ J.StrDef id flds
 saveTopDef (J.TypeDef id alias) = return ()
+saveTopDef (J.EnumDef id flds) = do
+  let entries = map (\(J.EnumFld fldId) -> toVarId fldId) flds
+  entries2 <- foldrM (\varId m -> if Set.notMember varId m then return $ Set.insert varId m else throwError (DuplicateVariable varId)) Set.empty entries
+  insertEnumEntry $
+    EnumContext
+      { enumName = toTypeId id,
+        enumFlds = entries2
+      }
 saveTopDef (J.ClsDef id elems) = do
   let clsId = toTypeId id
   meths <- createMethodEntries elems clsId
@@ -216,11 +237,15 @@ checkTopDef (J.FnDef ret id params (J.Block stmts)) = do
   checkReturnState
   resetReturnState
   discardVarTop
-  return $ Just $ FnDef castedRet (toFnId id) castedArgs (Block annotated)
+  return . Just $ FnDef castedRet (toFnId id) castedArgs (Block annotated)
+checkTopDef (J.ExtStrDef id flds _) = checkTopDef $ J.StrDef id flds
 checkTopDef (J.StrDef id flds) = do
   entries <- mapM checkStrItem flds
-  return $ Just $ StrDef (toTypeId id) entries
+  return . Just $ StrDef (toTypeId id) (concat entries)
 checkTopDef (J.TypeDef _ _) = return Nothing
+checkTopDef (J.EnumDef id flds) = do
+  let castedFlds = map (\(J.EnumFld id) -> EnumFld $ toVarId id) flds
+  return . Just $ EnumDef (toTypeId id) castedFlds
 checkTopDef (J.ClsDef id elems) = do
   let clsId = toTypeId id
   pushClassTop clsId True
@@ -231,12 +256,13 @@ checkTopDef (J.ClsDef id elems) = do
   Just <$> createClassDescriptor clsId annotated
 checkTopDef (J.SubClsDef id _ elems) = checkTopDef $ J.ClsDef id elems
 
--- | Typecheck a struct field. Returns the input augmented with
--- type annotations if succesful or throws a 'TypeError' otherwise.
-checkStrItem :: J.StrItem -> Chk StrItem
-checkStrItem (J.StrFld typ id) = do
+-- | Typecheck a struct field. Convert combined declarations of fields into
+-- individual declarations. Returns the input augmented with type annotations
+-- if type check is succesful or throws a 'TypeError' otherwise.
+checkStrItem :: J.StrItem -> Chk [StrField]
+checkStrItem (J.StrFld typ fldIds) = do
   casted <- castType typ
-  return $ StrFld casted (toVarId id)
+  return $ map (\(J.FldIdent id) -> StrFld casted (toVarId id)) fldIds
 
 -- | Typecheck a declaration inside a class. Returns the input augmented with
 -- type annotations if succesful or throws a 'TypeError' otherwise.
@@ -415,7 +441,10 @@ checkFnArgs _exprs typ _ = throwError $ ExpectedFnType typ
 -- any subexpressions with type annotations. Typechecks subexpressions, which
 -- can lead to a 'TypeError' being throwin.
 inferExpr :: J.Expr -> Chk TExpr
-inferExpr (J.EVar id) = let varId = toVarId id in EVar varId <$> findVar varId
+inferExpr (J.EVar id) =
+  catchError
+    (let varId = toVarId id in EVar varId <$> findVar varId)
+    (\_ -> EType <$> castType (J.Named id))
 inferExpr (J.ELitInt int) = return $ ELitInt int
 inferExpr (J.ELitDouble doub) = return $ ELitDouble doub
 inferExpr J.ELitTrue = return ELitTrue
@@ -443,8 +472,8 @@ inferExpr (J.ENew typ sizes) = do
   case sizes of
     [] ->
       case casted of
-        Struct strId -> return $ EStrInit casted
-        Object clsId -> return $ EObjInit casted
+        Struct strId -> return $ EStrInit strId
+        Object clsId -> return $ EObjInit clsId
         _ -> throwError $ ExpectedObjType casted
     _ -> do
       (annotated, arrType) <- inferSizeItems sizes casted
@@ -457,13 +486,18 @@ inferExpr (J.EArrIndex expr1 expr2) = do
     typ -> throwError $ ExpectedArrType typ
 inferExpr (J.EDot expr (J.EVar id)) = do
   let varId = toVarId id
-  if varId == "length"
-    then do
-      annotated <- inferExpr expr
-      case getType annotated of
-        (Array typ) -> return $ EArrLen annotated
-        typ -> throwError $ ExpectedArrType typ
-    else throwError $ UnknownProperty varId
+  annotated <- inferExpr expr
+  case getType annotated of
+    (Type (Enum enumId)) -> do
+      enum <- fromJust <$> lookupEnumEntry enumId
+      if Set.member varId (enumFlds enum)
+        then return $ EEnum enumId varId
+        else throwError $ UndeclaredVar varId
+    (Array typ) ->
+      if varId == "length"
+        then return $ EArrLen annotated
+        else throwError $ UnknownProperty varId
+    typ -> throwError $ ExpectedArrType typ
 inferExpr (J.EDot expr (J.ECall id args)) = do
   let fnId = toFnId id
   annotatedObj <- inferExpr expr
@@ -500,9 +534,15 @@ inferExpr (J.EAdd expr1 op expr2) = do
 inferExpr (J.ERel expr1 op expr2) = do
   catchError
     ( catchError
-        ( do
-            (annotated1, annotated2) <- inferBinStr expr1 expr2
-            return $ ERel annotated1 relOp annotated2
+        ( catchError
+            ( do
+                (annotated1, annotated2) <- inferBinStr expr1 expr2
+                return $ ERel annotated1 relOp annotated2
+            )
+            ( \_ -> do
+                (annotated1, annotated2) <- inferBinEnum expr1 expr2
+                return $ ERel annotated1 relOp annotated2
+            )
         )
         ( \_ -> do
             (annotated1, annotated2) <- inferBinObj expr1 expr2
@@ -561,6 +601,19 @@ inferBinStr expr1 expr2 = do
       annotated2 <- checkExpr expr2 inferred
       return (annotated1, annotated2)
     _ -> throwError $ ExpectedStrPtrType inferred
+
+-- | Infer the type for a binary expression and return both augmented with type
+-- information each. Both subexpressions have to be of the same enums.
+-- Otherwise, a 'TypeError' is thrown.
+inferBinEnum :: J.Expr -> J.Expr -> Chk (TExpr, TExpr)
+inferBinEnum expr1 expr2 = do
+  annotated1 <- inferExpr expr1
+  let inferred = getType annotated1
+  case inferred of
+    Enum _ -> do
+      annotated2 <- checkExpr expr2 inferred
+      return (annotated1, annotated2)
+    _ -> throwError $ ExpectedEnumType inferred
 
 -- | Infer the type for a binary expression and return both augmented with type
 -- information each. Both subexpressions have to be objects and be of the same
@@ -708,6 +761,7 @@ castType (J.Named id) = do
         case alias of
           Just typ -> return typ
           Nothing -> throwError $ InvalidAlias typeId
+      EnumKind -> return $ Enum typeId
       ClsKind -> return $ Object typeId
     Nothing -> throwError $ TypeNotFound typeId
 
@@ -754,6 +808,9 @@ data Context = Context
     -- | The struct definitions. Maps between struct names and the corresponding
     -- context.
     strs :: Map TypeIdent StructContext,
+    -- | The enum definitions. Maps between enum names and the corresponding
+    -- context.
+    enums :: Map TypeIdent EnumContext,
     -- | The class definitions. Maps between class names and the corresponding
     -- context.
     clss :: Map TypeIdent ClassContext,
@@ -767,11 +824,22 @@ data Context = Context
   }
   deriving (Show)
 
+-- | The context of a struct. Contains a mapping between names and types of
+-- fields.
 data StructContext = StrContext
   { -- | The name of the struct.
     strName :: TypeIdent,
     -- | The fields of the struct.
-    fields :: Map VarIdent Type
+    strFlds :: Map VarIdent Type
+  }
+  deriving (Show)
+
+-- | The context of an enum. Contains a list of enum fields.
+data EnumContext = EnumContext
+  { -- | The name of the enum.
+    enumName :: TypeIdent,
+    -- | The fields of the enum.
+    enumFlds :: Set VarIdent
   }
   deriving (Show)
 
@@ -813,6 +881,7 @@ emptyContext =
       fns = [Map.empty],
       retSt = NoReturn,
       strs = Map.empty,
+      enums = Map.empty,
       clss = Map.empty,
       curCls = Nothing,
       defKinds = Map.empty,
@@ -944,9 +1013,22 @@ lookupStruct id = do
 lookupStrField :: TypeIdent -> VarIdent -> Chk Type
 lookupStrField strId varId = do
   str <- gets $ fromJust . Map.lookup strId . strs
-  case Map.lookup varId (fields str) of
+  case Map.lookup varId (strFlds str) of
     Just typ -> return typ
     Nothing -> throwError $ UndeclaredVar varId
+
+-- | Insert an enum entry into the context.
+insertEnumEntry :: EnumContext -> Chk ()
+insertEnumEntry enum = modify (\ctx -> ctx {enums = Map.insert (enumName enum) enum (enums ctx)})
+
+-- | Search for an enum entry in the context. Returns 'Just' with the entry if
+-- found or 'Nothing' otherwise.
+lookupEnumEntry :: TypeIdent -> Chk (Maybe EnumContext)
+lookupEnumEntry id = gets $ Map.lookup id . enums
+
+-- | Search for an enum entry in the context and return whether it is present.
+memberEnumEntry :: TypeIdent -> Chk Bool
+memberEnumEntry id = gets $ Map.member id . enums
 
 -- | Push the class contexts of a class hierarchy on top of the variable context
 -- stack.
@@ -1015,7 +1097,7 @@ lookupClass id = do
 
 -- | Search for a method in a class and all its super classes. Returns the
 -- corresponding owning class and function type if the method exists. Throws a
---'TypeError' otherwise.
+-- 'TypeError' otherwise.
 lookupMethod :: FnIdent -> TypeIdent -> Chk (TypeIdent, Type)
 lookupMethod id clsId = do
   ctx <- get
