@@ -120,9 +120,9 @@ SizeSpec.   SizeItem ::= "[" Expr "]" ;
 
 separator   SizeItem "" ;
 
-EDeref.     Expr8 ::= Expr8 "->" Ident ;
+EDeref.     Expr7 ::= Expr7 "->" Ident ;
 
-EArrIndex.  Expr8 ::= Expr8 "[" Expr "]" ;
+EArrIndex.  Expr7 ::= Expr7 "[" Expr "]" ;
 
 EDot.       Expr6 ::= Expr6 "." Expr7 ;
 
